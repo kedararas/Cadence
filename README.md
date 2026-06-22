@@ -75,7 +75,7 @@ The modules are designed to be run in order; each writes a `.mat` file consumed 
  └──────────────┘   └────────────────────┘
 ```
 
-**1. Data Conversion** — Imports raw SciMedia `.gsd/.gsh` and TIFF stacks into the CADENCE `cmos_all_data` format: per‑camera image stacks, preview images, acquisition frame rate, and the analog/pacing channel.
+**1. Data Conversion** — Imports raw SciMedia `.gsd/.gsh` and TIFF stacks into the CADENCE `cmos_all_data` format: per‑camera image stacks, preview images, acquisition frame rate, and the analog/pacing channel. Supports batch processing of a directory.
 
 **2. Signal Conditioning** — SNR mapping, baseline‑drift removal, SVD spatial denoising, spatial binning, temporal (Savitzky–Golay) filtering, motion‑artifact correction, normalization, ensemble averaging, signal‑inversion detection/correction, and SNR masking. Supports batch processing of a directory.
 
@@ -84,6 +84,8 @@ The modules are designed to be run in order; each writes a `.mat` file consumed 
 - *Calcium (Ca):* transient duration, decay time, rise time, and decay time constant (τ).
 - *Alternans:* AP and calcium‑transient alternans.
 - *Arrhythmia dynamics:* spectral complexity (dominant frequency / regularity / organization), wavefront tracking, and phase‑singularity (rotor) dynamics.
+- *Image registration:* image alignment (dual Vm-Ca imaging).
+- *Data masking:* SNR-based data masking, user created masks
 - Supports single‑file and batch processing.
 
 **4. Signal Analysis** — Visualize and curate feature maps; apply ROI and SNR data masks and histogram bounds; compute per‑region statistics; play phase / annotated‑rotor movies; export maps, representative signals, and movies.
