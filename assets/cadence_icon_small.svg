@@ -1,0 +1,13 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>CADENCE app icon (simplified)</title>
+<desc>A bold red heart on a dark square with a yellow action-potential waveform, optimized for small sizes.</desc>
+<clipPath id="sq"><rect x="16" y="16" width="480" height="480" rx="100"/></clipPath>
+<g clip-path="url(#sq)">
+<rect x="16" y="16" width="480" height="480" fill="#15151c"/>
+<path d="M256 446 C118 344 58 252 58 182 C58 112 114 72 178 72 C220 72 248 98 256 134 C264 98 292 72 334 72 C398 72 454 112 454 182 C454 252 394 344 256 446 Z" fill="#d6362f"/>
+<path d="M178 72 C220 72 248 98 256 134 C256 200 256 360 256 446 C118 344 58 252 58 182 C58 112 114 72 178 72 Z" fill="#e34a3c"/>
+<path d="M52,300 H172 L188,176 Q196,176 204,196 L300,200 Q326,202 342,300 H460" fill="none" stroke="#2a0a06" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M52,300 H172 L188,176 Q196,176 204,196 L300,200 Q326,202 342,300 H460" fill="none" stroke="#ffd400" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<rect x="16" y="16" width="480" height="480" rx="100" fill="none" stroke="#ffffff" stroke-width="3" opacity="0.10"/>
+</svg>

@@ -1,0 +1,57 @@
+cff-version: 1.2.0
+message: "If you use CADENCE in your research, please cite it as below."
+title: "CADENCE: a toolkit for cardiac optical-mapping signal processing and analysis"
+abstract: >-
+  CADENCE is an end-to-end toolkit for processing and analyzing cardiac
+  optical-mapping recordings (transmembrane voltage and intracellular calcium):
+  data conversion, signal conditioning, feature extraction (activation,
+  APD/repolarization, conduction velocity, calcium kinetics, alternans, and
+  arrhythmia/rotor dynamics), and visualization/analysis.
+type: software
+authors:
+  - family-names: "Aras"
+    given-names: "Kedar"
+    email: "aras.research.lab@gmail.com"
+    affiliation: "ARAS Lab"
+    orcid: "https://orcid.org/0000-0002-9898-1462"
+repository-code: "https://github.com/kedararas/Cadence"
+url: "https://github.com/kedararas/Cadence"
+license: MIT
+version: "1.0.0"            # update to match each release/tag
+date-released: "2026-06-21" # update on release
+keywords:
+  - cardiac electrophysiology
+  - optical mapping
+  - action potential
+  - calcium transient
+  - conduction velocity
+  - alternans
+  - rotor dynamics
+  - MATLAB
+# --- Software archive DOI (the CODE itself) ---
+# If you archive a release on Zenodo, it mints a version DOI for the software.
+# Add it here so the repository/version is citable on its own:
+# doi: "10.5281/zenodo.XXXXXXX"
+# identifiers:
+#   - type: doi
+#     value: "10.5281/zenodo.XXXXXXX"
+#     description: "Archived software release"
+
+# --- Preferred citation (the PAPER) ---
+# Once the manuscript is published, fill this in. CFF treats this as the
+# citation people should use (GitHub's "Cite this repository" button will point
+# to the paper), while the fields above continue to describe the software.
+# preferred-citation:
+#   type: article
+#   title: "CADENCE: <manuscript title>"
+#   authors:
+#     - family-names: "Aras"
+#       given-names: "Kedar"
+#       orcid: "https://orcid.org/0000-0002-9898-1462"
+#   journal: "<journal name>"
+#   year: 20XX
+#   volume: <vol>
+#   issue: <issue>
+#   start: <first page>
+#   end: <last page>
+#   doi: "10.XXXX/<publisher-doi>"

@@ -1,0 +1,37 @@
+# ---- macOS junk ----
+.DS_Store
+
+# ---- Build artifacts & distributables ----
+# Compiled apps and installers are large and regenerable — ship them via
+# GitHub Releases, not in the repo.
+CADENCE_Desktop_App/
+release/
+*.app/
+*.dmg
+*.exe
+*.pkg
+*.msi
+
+# MATLAB Compiler / deployment scratch
+codegen/
+slprj/
+*.log
+
+# ---- MkDocs build output (published to the gh-pages branch) ----
+site/
+
+# ---- Local tooling / secrets ----
+.claude/
+
+# ---- Research data: never commit recordings ----
+*.mat
+*.gsd
+*.gsh
+
+# ---- Large design sources (the app uses the PNGs; keep .ai out of git) ----
+*.ai
+
+# ---- App Designer / MATLAB backups ----
+*.mlapp.bak*
+*.asv
+*.autosave
