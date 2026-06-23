@@ -8,13 +8,13 @@ cd "$(dirname "$0")/.."   # project root
 
 echo "==================  APPLE SILICON  =================="
 ./notarize/sign_notarize.sh \
-  distribution/macos-apple-silicon/CADENCE_AppleSilicon.app \
+  distribution/macos-apple-silicon/build/CADENCE_AppleSilicon.app \
   distribution/macos-apple-silicon/CADENCE-AppleSilicon.dmg  CADENCE
 
 echo
 echo "==================  INTEL  =================="
 ./notarize/sign_notarize.sh \
-  distribution/macos-intel/CADENCE_Intel.app \
+  distribution/macos-intel/build/CADENCE_Intel.app \
   distribution/macos-intel/CADENCE-Intel.dmg  CADENCE
 
 echo
