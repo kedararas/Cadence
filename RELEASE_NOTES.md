@@ -13,8 +13,10 @@ data conversion, signal conditioning, feature extraction (activation, APD,
 conduction velocity, calcium kinetics, alternans, arrhythmia/rotor dynamics),
 visualization, and analysis. No MATLAB license required.
 
-**Download & install (macOS)**
-1. Install the free **MATLAB Runtime R2025b**:
+> **`CADENCE.dmg` is built for macOS Apple Silicon (M1/M2/M3/M4) only.** It will not run on Intel Macs.
+
+**Download & install (macOS, Apple Silicon)**
+1. Install the free **MATLAB Runtime R2025b for macOS (Apple silicon)** — on the download page, select release **R2025b** and the **macOS Apple silicon** variant (not Intel):
    https://www.mathworks.com/products/compiler/matlab-runtime.html
 2. Download **`CADENCE.dmg`** (attached below), open it, and drag **CADENCE** to Applications.
 3. Launch CADENCE.

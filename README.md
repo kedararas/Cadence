@@ -97,7 +97,7 @@ The modules are designed to be run in order; each writes a `.mat` file consumed 
 CADENCE’s requirements are driven by data size — recordings are large and the conditioning/ensemble steps hold multiple in‑memory copies, so **RAM is the dominant constraint**. A discrete GPU is **not** required or used.
 
 ### Software
-- **MATLAB Runtime `R20XX?` (free, no license).** This is the only mandatory install and **must match the version CADENCE was built with**. *(Replace `R20XX?` with your build release, e.g. R2024b.)*
+- **MATLAB Runtime R2025b (free, no license).** This is the only mandatory install and **must match the build version (R2025b)** and your Mac's architecture (the current build is **Apple Silicon**).
 - **Operating system (64‑bit):** Windows 10/11, macOS (Apple Silicon and Intel are **separate builds** — install the one matching your Mac), or a Linux distribution supported by the build’s MATLAB release.
 - Administrator rights for the one‑time Runtime install; ~2–4 GB free disk for the Runtime.
 - **No MATLAB license and no toolboxes are required by the end user** — all dependencies are bundled.
@@ -116,11 +116,11 @@ An SSD is strongly recommended — loading hundreds‑of‑MB recordings from a 
 
 ## Installation
 
-CADENCE requires the free **MATLAB Runtime (R2025b)** — no MATLAB license needed. Install it once from MathWorks: <https://www.mathworks.com/products/compiler/matlab-runtime.html>
+CADENCE requires the free **MATLAB Runtime R2025b** — no MATLAB license needed. On the [MathWorks download page](https://www.mathworks.com/products/compiler/matlab-runtime.html), choose release **R2025b** and the **macOS Apple silicon** version (the current build is Apple Silicon only).
 
-### macOS
-1. Install the **MATLAB Runtime R2025b** (link above).
-2. Open **`CADENCE.dmg`** and drag **CADENCE** to your Applications folder.
+### macOS (Apple Silicon)
+1. Install **MATLAB Runtime R2025b — macOS (Apple silicon)** (link above). Match the release *and* the architecture exactly.
+2. Open **`CADENCE.dmg`** and drag **CADENCE** to your Applications folder. *(This build runs on Apple Silicon Macs only.)*
 3. Launch **CADENCE** and begin at the Data Conversion module.
 
 > The macOS build is **code-signed and notarized** by Apple, so it opens normally — no Gatekeeper warning.
