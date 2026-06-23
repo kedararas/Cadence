@@ -116,11 +116,17 @@ An SSD is strongly recommended — loading hundreds‑of‑MB recordings from a 
 
 ## Installation
 
-1. Install the **MATLAB Runtime** matching the CADENCE build release (bundled with the installer, or download from MathWorks).
-2. Run the **CADENCE installer** for your platform (Windows `.exe`, macOS `.app`, Linux binary).
+CADENCE requires the free **MATLAB Runtime (R2025b)** — no MATLAB license needed. Install it once from MathWorks: <https://www.mathworks.com/products/compiler/matlab-runtime.html>
+
+### macOS
+1. Install the **MATLAB Runtime R2025b** (link above).
+2. Open **`CADENCE.dmg`** and drag **CADENCE** to your Applications folder.
 3. Launch **CADENCE** and begin at the Data Conversion module.
 
-> **macOS note:** the application is not notarized; on first launch, right‑click the app → **Open** to bypass the Gatekeeper warning, or codesign/notarize for institutional distribution.
+> The macOS build is **code-signed and notarized** by Apple, so it opens normally — no Gatekeeper warning.
+
+### Windows / Linux
+Coming soon — builds for these platforms are produced separately. The installer will bundle/download the matching MATLAB Runtime.
 
 ## Quick start
 
