@@ -116,11 +116,13 @@ An SSD is strongly recommended — loading hundreds‑of‑MB recordings from a 
 
 ## Installation
 
-CADENCE requires the free **MATLAB Runtime R2025b** — no MATLAB license needed. On the [MathWorks download page](https://www.mathworks.com/products/compiler/matlab-runtime.html), choose release **R2025b** and the **macOS Apple silicon** version (the current build is Apple Silicon only).
+CADENCE requires the free **MATLAB Runtime R2025b** — no MATLAB license needed. On the [MathWorks download page](https://www.mathworks.com/products/compiler/matlab-runtime.html), choose release **R2025b** and the variant matching your Mac (**macOS Apple silicon** or **macOS Intel**).
 
-### macOS (Apple Silicon)
-1. Install **MATLAB Runtime R2025b — macOS (Apple silicon)** (link above). Match the release *and* the architecture exactly.
-2. Open **`CADENCE.dmg`** and drag **CADENCE** to your Applications folder. *(This build runs on Apple Silicon Macs only.)*
+### macOS (Apple Silicon or Intel)
+1. Install **MATLAB Runtime R2025b** matching your Mac (link above) — **macOS Apple silicon** *or* **macOS Intel**.
+2. Download the DMG for your Mac, open it, and drag **CADENCE** to your Applications folder:
+   - **Apple Silicon** (M1/M2/M3/M4) → `CADENCE-AppleSilicon.dmg`
+   - **Intel** → `CADENCE-Intel.dmg` (also runs on Apple Silicon via Rosetta 2)
 3. Launch **CADENCE** and begin at the Data Conversion module.
 
 > The macOS build is **code-signed and notarized** by Apple, so it opens normally — no Gatekeeper warning.
