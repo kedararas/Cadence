@@ -5,6 +5,7 @@
 # Compiled apps and installers are large and regenerable — ship them via
 # GitHub Releases, not in the repo.
 CADENCE_Desktop_App/
+distribution/
 release/
 *.app/
 *.dmg
@@ -22,6 +23,11 @@ site/
 
 # ---- Local tooling / secrets ----
 .claude/
+github-recovery-codes.txt
+*recovery-codes*
+*.pem
+*.p12
+*.key
 
 # ---- Research data: never commit recordings ----
 *.mat

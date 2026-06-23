@@ -1,29 +1,40 @@
 #!/bin/bash
-# Sign, notarize, and staple the CADENCE standalone app and a distributable DMG.
-# Prereqs: Developer ID Application cert installed, and a stored notarytool
-# credential profile (see README in this folder / the chat instructions).
+# Sign (hardened runtime + entitlements), DMG, notarize, and staple ONE app.
+# Architecture-agnostic — run it once per build (Apple Silicon and Intel) from
+# the project root. Notarization works for any architecture from any Mac.
 #
-# Usage:  ./notarize/sign_notarize.sh
-# Run from the project root (/Users/kedararas/Desktop/Cadence2026).
+# Usage:
+#   ./notarize/sign_notarize.sh <path-to-.app> <output.dmg> [VolumeName]
+#
+# Examples:
+#   ./notarize/sign_notarize.sh \
+#     distribution/macos-apple-silicon/CADENCE_AppleSilicon.app \
+#     distribution/macos-apple-silicon/CADENCE-AppleSilicon.dmg  CADENCE
+#
+#   ./notarize/sign_notarize.sh \
+#     distribution/macos-intel/CADENCE_Intel.app \
+#     distribution/macos-intel/CADENCE-Intel.dmg  CADENCE
 
 set -euo pipefail
 
-# ============ FILL THESE IN ============
-DEVELOPER_ID="Developer ID Application: Kedar Aras (B579TS737G)"   # exact string from: security find-identity -v -p codesigning
-KEYCHAIN_PROFILE="CADENCE_NOTARY"                              # the profile name you stored with notarytool store-credentials
-# =======================================
-
-APP="CADENCE_Desktop_App/build/CADENCE.app"
+# ============ CONFIG (same for every build) ============
+DEVELOPER_ID="Developer ID Application: Kedar Aras (B579TS737G)"   # security find-identity -v -p codesigning
+KEYCHAIN_PROFILE="CADENCE_NOTARY"                                  # notarytool store-credentials profile name
 ENTITLEMENTS="notarize/entitlements.plist"
-DMG="CADENCE_Desktop_App/CADENCE.dmg"
-VOLNAME="CADENCE"
+# =======================================================
 
-[ -d "$APP" ] || { echo "ERROR: $APP not found (run from project root)."; exit 1; }
+APP="${1:?Usage: $0 <path-to-.app> <output.dmg> [VolumeName]}"
+DMG="${2:?Usage: $0 <path-to-.app> <output.dmg> [VolumeName]}"
+VOLNAME="${3:-CADENCE}"
 
-echo ">> [1/5] Signing the app with hardened runtime + entitlements..."
-# --deep signs nested binaries too; works for most MATLAB standalone apps.
-# If notarization later reports an unsigned nested binary, switch to an
-# inside-out sign (sign each Mach-O under Contents/ first, then the bundle).
+[ -d "$APP" ]          || { echo "ERROR: app not found: $APP"; exit 1; }
+[ -f "$ENTITLEMENTS" ] || { echo "ERROR: $ENTITLEMENTS not found — run from the project root."; exit 1; }
+
+arch=$(lipo -archs "$APP/Contents/MacOS/$(basename "${APP%.app}")" 2>/dev/null \
+       || file "$APP/Contents/MacOS/"* 2>/dev/null | grep -oE 'arm64|x86_64' | head -1)
+echo ">> Target: $APP  (arch: ${arch:-unknown})"
+
+echo ">> [1/5] Signing with hardened runtime + entitlements..."
 codesign --force --deep --timestamp --options runtime \
          --entitlements "$ENTITLEMENTS" \
          --sign "$DEVELOPER_ID" "$APP"
@@ -49,5 +60,4 @@ xcrun stapler staple "$APP" || true
 echo
 echo ">> Done. Gatekeeper check:"
 spctl -a -t open --context context:primary-signature -vv "$DMG" || true
-codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "Authority|TeamIdentifier|Timestamp" || true
 echo ">> Distribute: $DMG"
