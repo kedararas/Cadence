@@ -73,15 +73,16 @@ for i = 1:frame_len
     % Topological charge via discrete line integral
     nt = sum(kby(kLocY) .* COx, 3) + sum(kbx(kLocX) .* COy, 3);
 
-    % Normalize by the dominant extremum
-    nt_max = max(nt(:));
-    nt_min = min(nt(:));
-    if abs(nt_max) > abs(nt_min)
-        nt = nt / nt_max;
-    else
-        nt = nt / nt_min;
-    end
-
+    % Emit the RAW topological charge. Do NOT normalize per-frame by the
+    % dominant extremum: the charge is a WINDING NUMBER — a genuine phase
+    % singularity carries ~a full +/-2*pi rotation, an absolute quantity that
+    % does not depend on signal amplitude or on how strong the other PS in the
+    % frame happen to be. Dividing each frame by its strongest PS turned an
+    % absolute topological test into a relative one, so a weaker-but-genuine PS
+    % (e.g. a rotor core in any frame where another PS is momentarily stronger)
+    % fell below the round()==+/-1 cut in count_ps and blinked out, fragmenting
+    % rotor tracks. count_ps now thresholds this raw charge at a fixed absolute
+    % value (ps_charge_threshold).
     phase_singularity_data(:,:,i) = nt;
 end
 

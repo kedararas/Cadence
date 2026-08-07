@@ -1,10 +1,16 @@
-function save_figures_to_pdf(figs, filename)
+function save_figures_to_pdf(figs, filename, closeAfterSave)
 % SAVE_FIGURES_TO_PDF  Save an array of uifigure handles into one PDF file.
 %
 %   save_figures_to_pdf(figs, filename)
+%   save_figures_to_pdf(figs, filename, closeAfterSave)
 %
-%   figs     - array of uifigure handles, e.g. [fig1, fig2, fig3]
-%   filename - output path, e.g. 'results.pdf'
+%   figs           - array of uifigure handles, e.g. [fig1, fig2, fig3]
+%   filename       - output path, e.g. 'results.pdf'
+%   closeAfterSave - (optional, default true) close/delete the figures once
+%                    saved. Batch processing passes true so windows do not pile
+%                    up across files; single-file extraction passes false so the
+%                    user can read/copy on-screen values (e.g. median APD80)
+%                    before closing the windows manually.
 %
 %   Notes
 %   -----
@@ -29,6 +35,9 @@ function save_figures_to_pdf(figs, filename)
 
 if nargin < 2 || isempty(filename)
     filename = 'figures.pdf';
+end
+if nargin < 3 || isempty(closeAfterSave)
+    closeAfterSave = true;   % preserve prior behavior for any other caller
 end
 
 % Ensure .pdf extension
@@ -94,9 +103,13 @@ else
     fprintf('Saved figures → %s\n', filename);
 end
 
-% Close all figures now that they have been saved.
+% Close all figures now that they have been saved — but only when the caller
+% asked for it (batch runs). Single-file extraction passes closeAfterSave=false
+% so the windows stay open for the user to read/copy on-screen values.
 % Use delete, not close: close() routes through CloseRequestFcn / handle
 % visibility and frequently leaves uifigures open; delete() destroys them
 % unconditionally.
-delete(figs(isvalid(figs)));
+if closeAfterSave
+    delete(figs(isvalid(figs)));
+end
 end

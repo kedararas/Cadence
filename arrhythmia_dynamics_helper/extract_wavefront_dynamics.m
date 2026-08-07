@@ -7,8 +7,9 @@ function wavefront_dynamics = extract_wavefront_dynamics(cmos_all_data,threshold
 %   Extraction module). Builds Wavefront objects from the per-frame segmented
 %   wavefront list, then frame-by-frame links each wavefront to its best match
 %   in the next frame (via get_wf_neighbors / choose_wf_cand) and records the
-%   resulting tracks in a WavefrontDynamics handle object. The dominant
-%   frequency and frame rate carried on cmos_all_data seed the dynamics object.
+%   resulting tracks in a WavefrontDynamics handle object. The p75 rotor
+%   frequency (estimate_rotor_frequency on the DF map, matching the PS pipeline)
+%   and frame rate seed the dynamics object.
 %
 %   Inputs
 %     cmos_all_data  struct with fields wavefronts (2 x num_frames cell;
@@ -25,11 +26,23 @@ function wavefront_dynamics = extract_wavefront_dynamics(cmos_all_data,threshold
 
 try
 
-% WavefrontDynamics is a handle class — no struct copy overhead as it grows
+% WavefrontDynamics is a handle class — no struct copy overhead as it grows.
+% Seed df with the p75 rotor-frequency estimate (estimate_rotor_frequency), NOT
+% the plain median: this is the same rotation rate the PS pipeline uses
+% (extract_ps_dynamics) and the same one the app derives its wavefront
+% life_span_threshold from, so the reentry cycle-length is consistent across the
+% analyses. On a bimodal DF map the median is dragged into slow far-field tissue
+% and over-lengthens the cycle. wf_dynamics.df feeds only check_for_wf_reentry.
+if isfield(cmos_all_data, 'pixel_size')
+    wf_pixel_size = cmos_all_data.pixel_size;   % mm/px, if the caller set it
+else
+    wf_pixel_size = [];                          % reentry tolerances self-scale
+end
 wavefront_dynamics = WavefrontDynamics( ...
     cmos_all_data.wf_count, ...
-    median(cmos_all_data.df_map, 'all', 'omitnan'), ...
-    cmos_all_data.frame_rate);
+    estimate_rotor_frequency(cmos_all_data.df_map, 75), ...
+    cmos_all_data.frame_rate, ...
+    wf_pixel_size);
 
 % Wavefront Tracking
 % cmos_all_data.wavefronts is 2×num_frames: row 1 = filtered newsegWave (for

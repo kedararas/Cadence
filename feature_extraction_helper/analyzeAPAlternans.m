@@ -345,16 +345,24 @@ function alternans = apAlternans3D(time, voltage3D, opts)
         % This is the AP analogue of diastolic SR Ca2+ load (Wang et al. 2014)
         diastolic_beat{j} = lo .* nan_mask;
 
-        % Activation: frame of max temporal derivative (max upstroke)
-        dv           = diff(wn, 1, 3);                           % R x C x (T_win-1)
-        [dvMax, af]  = max(dv, [], 3);                           % R x C
-        act_beat{j}  = double(af) * dt .* nan_mask;             % ms, NaN outside mask
-        dVdt_beat{j} = dvMax / dt .* nan_mask;                  % norm.units/ms
-
-        % Peak location (for "after peak" gate)
+        % Peak location (for "after peak" gate and to bound the upstroke search)
         [~, pk] = max(wn, [], 3);                                % R x C
         t_idx   = reshape(1:T_win, 1, 1, T_win);
         after_pk = t_idx > reshape(pk, R, C, 1);                % R x C x T_win
+
+        % Activation: frame of max temporal derivative (max upstroke).  The
+        % upstroke must PRECEDE the peak, so the derivative is masked at and
+        % after the peak before taking the max; otherwise a late artifact in a
+        % noisy pixel can win and place activation deep in repolarisation,
+        % swallowing the whole AP (amp <= 0).  Harmless where activation was
+        % already correct -- APD is unchanged, coverage improves a few percent.
+        dv           = diff(wn, 1, 3);                           % R x C x (T_win-1)
+        td_dv        = reshape(1:(T_win-1), 1, 1, T_win-1);
+        dv_pre       = dv;
+        dv_pre(td_dv >= reshape(pk, R, C, 1)) = -Inf;            % keep only up to the peak
+        [dvMax, af]  = max(dv_pre, [], 3);                       % R x C
+        act_beat{j}  = double(af) * dt .* nan_mask;             % ms, NaN outside mask
+        dVdt_beat{j} = dvMax / dt .* nan_mask;                  % norm.units/ms
 
         % APD at each repolarisation level (vectorised cumsum crossing)
         for lv = 1:nLev

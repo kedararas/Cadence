@@ -8,6 +8,7 @@ classdef WavefrontDynamics < handle
         wf_count
         df
         frame_rate
+        pixel_size        = []   % mm/px, if known; enables physical reentry tolerances
         wf_size_duration  = []
         wf_path           = {}
         wf_fractionations = []
@@ -20,10 +21,13 @@ classdef WavefrontDynamics < handle
     end
 
     methods
-        function obj = WavefrontDynamics(wf_count, df, frame_rate)
+        function obj = WavefrontDynamics(wf_count, df, frame_rate, pixel_size)
             obj.wf_count    = wf_count;
             obj.df          = df;
             obj.frame_rate  = frame_rate;
+            if nargin >= 4
+                obj.pixel_size = pixel_size;
+            end
         end
     end
 end

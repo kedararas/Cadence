@@ -12,8 +12,13 @@ function recs = validate_conditioned(d, recording)
 %     acqFreq            present, finite, in a physiological frame-rate band.
 %     <CAM>_data         the conditioned stack has finite, non-flat content.
 %     <CAM>_SNR          median in-mask SNR above a usable floor.
+%     <CAM>_capture      tissue dominant frequency matches the pacing rate
+%                        (1:1 capture); WARNs when the tissue runs at its own
+%                        rate (spontaneous / arrhythmic / block), which makes
+%                        the ensemble average and any paced-APD metric invalid.
 %     <CAM>_average      ensemble average has dynamic range (catches the
-%                        all-zeros / no-valid-beat ensemble-average failure).
+%                        all-zeros / no-valid-beat ensemble-average failure)
+%                        and relaxes within the cycle (decay-fraction).
 %
 %   See qc_check for the record shape and status semantics.
 
@@ -26,6 +31,7 @@ function recs = validate_conditioned(d, recording)
     end
 
     % ---- acquisition frame rate ----
+    fs = NaN;   % kept in scope for the per-camera capture check below
     if isfield(d, 'acqFreq') && isscalar(d.acqFreq) && isfinite(d.acqFreq)
         fs = double(d.acqFreq);
         if fs >= 50 && fs <= 5000
@@ -72,6 +78,27 @@ function recs = validate_conditioned(d, recording)
                 add(cam + "_SNR", "WARN", msnr, sprintf("median SNR %.1f below floor 2.0", msnr));
             else
                 add(cam + "_SNR", "PASS", msnr, sprintf("median SNR %.1f", msnr));
+            end
+        end
+
+        % Capture: is the tissue following the pacing 1:1?  The ensemble average
+        % and any paced-APD metric are only valid when each stimulus captures one
+        % beat.  When the tissue runs at its own rate -- spontaneous activity, an
+        % organized tachyarrhythmia, or 2:1 block -- the average keys to a
+        % stimulus the tissue is not following and its APD is meaningless.
+        % Nothing else here catches that: the stack is finite, has range, and an
+        % organized arrhythmia even relaxes within its own (faster) cycle, so it
+        % passes the decay-fraction check too.
+        if isfield(d, 'analog1') && ~isempty(d.analog1) && isfinite(fs)
+            [cr, fp, ftis] = capture_ratio(X, d.analog1, fs);
+            if ~isnan(cr)
+                if cr < 0.85 || cr > 1.15
+                    add(cam + "_capture", "WARN", cr, sprintf( ...
+                        "not 1:1 captured (tissue %.1f Hz vs pacing %.1f Hz, ratio %.2f) — do not use the ensemble average or paced APD; route to arrhythmia analysis", ...
+                        ftis, fp, cr));
+                else
+                    add(cam + "_capture", "PASS", cr, sprintf("1:1 capture, tissue %.1f Hz", ftis));
+                end
             end
         end
 
@@ -155,4 +182,63 @@ function df = ensemble_decay_fraction(A)
     nf  = min(5, T);
     fin = mean(P(:, end-nf+1:end), 2);        % diastolic level (last few frames)
     df  = median((pk - fin) ./ max(pk - mn, eps));
+end
+
+
+function [ratio, f_pace, f_tissue] = capture_ratio(X, analog1, fs)
+%CAPTURE_RATIO  Tissue dominant frequency / pacing frequency for a CAM stack.
+%   [ratio, f_pace, f_tissue] = capture_ratio(X, analog1, fs)
+%
+%   ratio ~ 1  => 1:1 capture (each stimulus drives one beat)
+%   ratio > 1  => tissue faster than the drive (spontaneous activity or an
+%                 organized tachyarrhythmia not following the pacemaker)
+%   ratio < 1  => loss of capture / conduction block (e.g. 2:1)
+%
+%   Frequency-domain, not beat-counting, on purpose: a peak detector whose
+%   minimum spacing is set from the PACING period skips every other beat of a
+%   faster rhythm and reports a false ~0.75 ratio.  The dominant frequency of
+%   the tissue's own spatial-mean signal has no such trap.  Toolbox-free (no
+%   findpeaks / hann).  Returns NaN when pacing cannot be established.
+
+    ratio = NaN; f_pace = NaN; f_tissue = NaN;
+    if isempty(analog1) || ~isfinite(fs) || fs <= 0
+        return;
+    end
+
+    % --- pacing frequency from the stimulus trace (rising edges) ---
+    a  = double(analog1(:));
+    mx = max(a); mn = min(a);
+    if numel(a) < 10 || mx <= mn
+        return;
+    end
+    stim = find(diff(a > (mx + mn) / 2) > 0);
+    if numel(stim) < 3            % too few stimuli to define a rate
+        return;
+    end
+    f_pace = fs / median(diff(stim));
+
+    % --- tissue dominant frequency (NaN-safe spatial mean, windowed FFT) ---
+    T = size(X, ndims(X));
+    s = mean(reshape(double(X), [], T), 1, 'omitnan')';
+    if ~all(isfinite(s)) || std(s) == 0
+        return;
+    end
+    w    = 0.5 * (1 - cos(2*pi*(0:T-1)'/(T-1)));   % Hann window, toolbox-free
+    s    = (s - mean(s)) .* w;
+    nfft = 2^nextpow2(4*T);                        % zero-pad for resolution
+    Pw   = abs(fft(s, nfft)).^2;
+    fr   = (0:nfft-1)' * (fs / nfft);
+    band = fr >= 1 & fr <= 40;                     % physiological band
+    Pb   = Pw(band);  fb = fr(band);
+    [pmax, ix] = max(Pb);
+    f_tissue   = fb(ix);
+
+    % Harmonic guard: if the tallest peak is actually the 2nd harmonic of a
+    % lower fundamental (strong power near f_tissue/2), use the fundamental.
+    half = abs(fb - f_tissue/2) < 0.15 * f_tissue;
+    if any(half) && max(Pb(half)) >= 0.5 * pmax
+        f_tissue = f_tissue / 2;
+    end
+
+    ratio = f_tissue / f_pace;
 end

@@ -56,7 +56,7 @@ elseif wf_lifespan >= thr8
 end
 
 % Check for reentry
-reentry_index = check_for_wf_reentry(wf, wavefronts, wf_dynamics.df, wf_dynamics.frame_rate);
+reentry_index = check_for_wf_reentry(wf, wavefronts, wf_dynamics.df, wf_dynamics.frame_rate, wf_dynamics.pixel_size);
 if reentry_index == 1
     wf_dynamics.wf_reentry(end+1,:) = [wf_sd_index, wf_bd1, wf_bd2, wf_median_len, wf_lifespan];
 end

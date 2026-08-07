@@ -63,12 +63,27 @@ cycles_threshold = round(min_cycles * cycle_frames);      % fixed-cycle threshol
 % The validity threshold is applied AFTER tracking (see end of function).
 % In 'fdr' mode cycles_threshold is the fallback if the noise fit fails.
 
-% Look-ahead window: allow PS to be missing for up to 25% of one rotation period.
-% Expressed in frames so it scales correctly with frame rate.
-% Tuning guide: increase missing_fraction if rotors are frequently split into
-% short tracks; decrease if unrelated PS are being incorrectly linked.
+% Look-ahead window: how long a PS may vanish (detection dropout) yet still be
+% linked forward as the same PS. This is governed by PHASE-MAP dropout duration,
+% NOT by the rotation rate, so it is FLOORED in absolute time and only CAPPED
+% (never set) by the rotation period. Tying it purely to df_rotor (the old
+% round(0.25*frame_rate/df_rotor)) made a faster — i.e. more accurate — DF
+% shrink the window and fragment real rotors: at 25 Hz it collapsed to 10
+% frames and lost visually-obvious rotors that a ~17-frame window held together.
+%   floor: max plausible PS detection dropout (~17 ms; validated on rat VF at
+%          1 kHz, where 17 frames reconnected the obvious rotors).
+%   0.25-cycle term: keeps the slow-rhythm behaviour (large species) unchanged,
+%          where a quarter rotation already exceeds the floor.
+%   half-cycle cap: never bridge more than half a rotation, or a re-formed PS
+%          could be linked to a dead one, inflating lifespans / false rotors.
+% Tuning: raise max_dropout_ms if rotors are still split into short tracks;
+% lower it (or the cap) if unrelated PS are being incorrectly linked.
 missing_fraction = 0.25;
-lookahead_frames = round(missing_fraction * frame_rate / df_rotor);
+max_dropout_ms   = 17;
+floor_frames     = round(max_dropout_ms / 1000 * frame_rate);
+cycle_gap_frames = round(missing_fraction * frame_rate / df_rotor);   % 0.25 cycle
+halfcycle_frames = round(0.5 * frame_rate / df_rotor);
+lookahead_frames = min(halfcycle_frames, max(floor_frames, cycle_gap_frames));
 
 % PS tracking threshold — maximum deviation from predicted position (pixels).
 % With velocity extrapolation, this covers detection noise only (not drift),

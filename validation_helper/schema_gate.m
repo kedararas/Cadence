@@ -30,7 +30,7 @@ function [ok, msgs, recs] = schema_gate(d, stage, recording)
     ok = ~any(isFail);
 
     % Surface only FAILs (real structural problems) to the app console. The only
-    % WARNs validate_schema emits are "optional field absent" — by definition not
+    % WARNs validate_schema emits are "optional field absent" -- by definition not
     % a problem (e.g. a recording with no analog/pacing channel), so they would
     % just be noise. They remain in `recs` for anyone who wants the full log.
     msgs = {};

@@ -45,3 +45,9 @@ github-recovery-codes.txt
 # MATLAB Project metadata (not used)
 Cadence2026.prj
 resources/
+
+# ---- R ----
+.Rhistory
+
+# ---- temporary figure-panel output ----
+feature_extraction_helper/Ui/
