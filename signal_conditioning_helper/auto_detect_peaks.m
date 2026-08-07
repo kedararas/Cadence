@@ -26,7 +26,15 @@ function pacing = auto_detect_peaks(data)
     [~, ~, T] = size(data);
 
     % ── Step 1: Spatial mean ───────────────────────────────────────────────
-    sig = reshape(mean(reshape(double(data), [], T), 1), T, 1);
+    % 'omitnan' is essential: conditioned stacks carry NaN background pixels, and
+    % a plain mean returns NaN for every frame that contains even one NaN — i.e.
+    % the whole trace — which collapses to "no range" below and yields zero beats.
+    sig = reshape(mean(reshape(double(data), [], T), 1, 'omitnan'), T, 1);
+    % Any frame that was entirely NaN (no tissue) is still NaN here; fill it so
+    % smoothing/derivative stay finite rather than propagating NaN.
+    if any(isnan(sig))
+        sig = fillmissing(sig, 'linear', 'EndValues', 'nearest');
+    end
 
     % ── Step 2: Smooth (Gaussian, 2 % of recording, min 5 frames) ─────────
     win = max(5, round(T * 0.02));
