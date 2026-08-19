@@ -51,3 +51,6 @@ resources/
 
 # ---- temporary figure-panel output ----
 feature_extraction_helper/Ui/
+
+# ---- reference PDFs (copyrighted; not for redistribution) ----
+docs/literature/
