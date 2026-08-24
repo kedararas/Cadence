@@ -2,7 +2,8 @@ function [Vmag, Vx, Vy, Gx, Gy, meta] = conduction_velocity(T, dx, dy, opts)
 % CONDUCTION_VELOCITY  Compute conduction velocity from an activation-time map.
 %
 % Inputs
-%   T    : activation time map (2D, ms). NaNs allowed for invalid pixels.
+%   T    : activation time map (2D, ms). NaN/0 = off-tissue (same convention
+%          as circle_method_cv; masked maps use a 0 background).
 %          Any consistent time unit works; the CADENCE app passes ms.
 %   dx   : spatial step in x-direction (e.g., mm per pixel)
 %   dy   : spatial step in y-direction (e.g., mm per pixel)
@@ -11,6 +12,9 @@ function [Vmag, Vx, Vy, Gx, Gy, meta] = conduction_velocity(T, dx, dy, opts)
 %                               default) or 'polyfit' (grad from a local least-
 %                               squares surface fit — more robust, curvature-aware)
 %          .smooth_sigma_pix  : Gaussian sigma in pixels (default 0 = none)
+%          .min_support       : reject smoothed pixels whose valid fraction of
+%                               kernel mass is below this (default 0.5; 1 =
+%                               fully valid neighbourhood, ~0.5 = straight edge)
 %          .grad_min          : minimum |grad T| to trust (ms/cm) (default auto)
 %          .speed_max         : cap CV magnitude (mm/ms) (default 2.50)
 %          .polyfit_win       : half-window (pixels) for 'polyfit' (default 3 -> 7x7)
@@ -34,6 +38,7 @@ function [Vmag, Vx, Vy, Gx, Gy, meta] = conduction_velocity(T, dx, dy, opts)
 if nargin < 4, opts = struct(); end
 opts = setdefault(opts, 'method', 'gradient');     % 'gradient' | 'polyfit'
 opts = setdefault(opts, 'smooth_sigma_pix', 2);
+opts = setdefault(opts, 'min_support', 0.5);       % min valid fraction of kernel mass (1 = fully valid, ~0.5 = straight edge)
 opts = setdefault(opts, 'grad_min', []);
 opts = setdefault(opts, 'speed_max', 2.50);        % adjust to your prep/species
 opts = setdefault(opts, 'reject_over_cap', true);  % true: drop over-cap pixels; false: clamp to speed_max
@@ -42,26 +47,68 @@ opts = setdefault(opts, 'polyfit_order', 2);       % 1 = plane, 2 = quadratic
 opts = setdefault(opts, 'use_imgaussfilt', true);
 
 T = double(T);
+% Shared tissue convention with circle_method_cv: NaN/0 = off-tissue. Masked
+% activation maps are produced by multiplication (act_times .* mask), so a
+% 0 background means "outside the mask", not "activated at t=0"; without this
+% the gradient engine smooths real LATs into the background and emits
+% spurious border vectors that the circle engine (correctly) rejects.
+T(T == 0) = NaN;
 validT = isfinite(T);
 
 % --- Optional smoothing (on T, not on gradients) ---
+% NaN-AWARE (normalised / Nadaraya-Watson convolution).  A plain Gaussian is
+% NOT NaN-aware: every pixel whose kernel touches a NaN becomes NaN, so at the
+% default sigma=2 the valid region erodes ~3*sigma = 6 px inward from every hole
+% AND from the tissue boundary.  On a masked activation map that is the dominant
+% cause of missing CV pixels -- far larger than the grad_min or speed_max
+% rejections.  Measured on real data before this fix: a human wedge LAT map lost
+% 38.6% of its finite pixels to the filter alone, and CV coverage fell from
+% 97.5% (sigma=0) to 39.7% (sigma=2) with the loss being one large contiguous
+% region, not speckle.
+%
+% Instead, filter the NaN-zeroed map and the validity mask with the SAME kernel
+% and divide.  Each output pixel is then the Gaussian-weighted mean of the VALID
+% neighbours only, so smoothing no longer eats coverage.  Near a boundary the
+% kernel is one-sided, which is the standard (and far preferable) behaviour --
+% callers that need edge pixels excluded should still apply their own margin.
 if opts.smooth_sigma_pix > 0
+    sig = opts.smooth_sigma_pix;
+    Tf  = T;  Tf(~validT) = 0;      % zero-fill: contributes nothing to the sum
+    W   = double(validT);           % ...and its weight is zero in the denominator
+
     if opts.use_imgaussfilt && exist('imgaussfilt','file')
-        Ts = imgaussfilt(T, opts.smooth_sigma_pix, 'FilterDomain', 'spatial');
+        % Safe now: Tf and W contain no NaN, so imgaussfilt cannot spread one.
+        num = imgaussfilt(Tf, sig, 'FilterDomain', 'spatial');
+        den = imgaussfilt(W,  sig, 'FilterDomain', 'spatial');
     else
         % fallback: separable Gaussian via conv2
-        sig = opts.smooth_sigma_pix;
         ksz = max(3, 2*ceil(3*sig)+1);
         g = exp(-((-(ksz-1)/2:(ksz-1)/2).^2)/(2*sig^2));
         g = g / sum(g);
-        Ts = conv2(conv2(T, g, 'same'), g', 'same');
+        num = conv2(conv2(Tf, g, 'same'), g', 'same');
+        den = conv2(conv2(W,  g, 'same'), g', 'same');
     end
+
+    Ts = num ./ den;
+    % Support floor. den is the kernel-weighted VALID fraction of each
+    % neighbourhood (kernels are normalised: 1 = fully valid, ~0.5 = straight
+    % tissue edge). A bare den<=eps guard can never fire for a valid pixel —
+    % its own kernel weight (~0.04 at sigma=2) already exceeds eps — so
+    % near-isolated pixels kept essentially unsmoothed values and pixels whose
+    % kernel reaches across NaN holes (e.g. block lines) blended times from
+    % the far side. Pixels with less than min_support valid mass are rejected;
+    % den is exported as meta.smooth_support so callers can gate stricter.
+    Ts(den < opts.min_support) = NaN;
+    support = den;
 else
     Ts = T;
+    support = [];
 end
 
-% Preserve NaN regions
+% Preserve NaN regions; support-rejected pixels are no longer valid either
+% (keeps them out of polyfit windows and downstream masks).
 Ts(~validT) = NaN;
+validT = validT & isfinite(Ts);
 
 % --- Gradients ---
 % Both engines feed the same speed = 1/||grad T|| relationship below; they only
@@ -90,11 +137,15 @@ if isempty(opts.grad_min)
     if isempty(gm)
         opts.grad_min = 0;
     else
-        opts.grad_min = max(1e-6, 0.05*median(gm));  % 5% of median
+        % 2.5% of median: the applied threshold. (Previously written as 5% of
+        % median but applied at half strength; folded so the auto default is
+        % unchanged while opts.grad_min is now applied — and reported in
+        % meta — exactly as given.)
+        opts.grad_min = max(5e-7, 0.025*median(gm));
     end
 end
 
-good = validT & isfinite(gradMag) & (gradMag >= 0.5*opts.grad_min);
+good = validT & isfinite(gradMag) & (gradMag >= opts.grad_min);
 
 % --- Conduction velocity (mm/ms) ---
 Vmag = nan(size(T));
@@ -139,6 +190,8 @@ meta.reject_over_cap = opts.reject_over_cap;
 meta.dx         = dx;
 meta.dy         = dy;
 meta.smooth_sigma_pix = opts.smooth_sigma_pix;
+meta.min_support      = opts.min_support;
+meta.smooth_support   = support;             % valid kernel-mass fraction per pixel ([] if no smoothing)
 meta.fit_r2     = fitR2;                 % [] for gradient; per-pixel fit R^2 for polyfit
 
 end

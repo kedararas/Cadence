@@ -235,19 +235,54 @@ end
 % ========================================================================
 function [ri, oi] = regOrgIndices(f, pxx, df, bw, totBand, K)
 %REGORGINDICES  RI and OI from a PSD given DF, peak half-width and denominator.
+%   The K harmonic windows [k*df - bw, k*df + bw] are combined as a UNION of
+%   frequency bins, not a sum of per-window powers. With bw floored at 0.5 Hz
+%   the windows overlap whenever df < 1 Hz (2*bw > df); summing them then
+%   counts the shared bins once per window and OI climbs past 1 (-> ~2 at the
+%   0.5 Hz scan floor). Integrating each bin at most once keeps OI <= 1 by
+%   construction for any df.
     inTot  = f >= totBand(1) & f <= totBand(2);
-    totalP = trapz(f(inTot), pxx(inTot));
+    totalP = maskPower(f, pxx, inTot);
     if ~(totalP > 0)
         ri = NaN;  oi = NaN;  return;
     end
-    ri = bandPower(f, pxx, df, bw) / totalP;
-    oiNum = 0;
+    % RI numerator clipped to the denominator band, exactly like OI below:
+    % unclipped, a bw-floored peak window that extends past a fixed
+    % TotalPowerBand edge counts power the denominator excludes, so RI can
+    % exceed OI (and 1). Sharing maskPower also keeps RI and OI on one
+    % integrator by construction.
+    inPeak = f >= df - bw & f <= df + bw;
+    ri = maskPower(f, pxx, inPeak & inTot) / totalP;
+    % No early break for windows crossing totBand(2): the inTot clip below
+    % keeps the integration inside the denominator band, so a partially
+    % in-band harmonic contributes its in-band part instead of being dropped
+    % whole (dropping it stepped OI discontinuously at df = 2*bw, i.e. the
+    % df = 1 Hz contour with the 0.5 Hz bw floor).
+    inHarm = false(size(f));
     for k = 1:K
         fk = k * df;
-        if fk + bw > totBand(2), break; end   % stay inside the denominator band
-        oiNum = oiNum + bandPower(f, pxx, fk, bw);
+        inHarm = inHarm | (f >= fk - bw & f <= fk + bw);
     end
-    oi = oiNum / totalP;
+    oi = maskPower(f, pxx, inHarm & inTot) / totalP;
+end
+
+
+% ========================================================================
+function P = maskPower(f, pxx, idx)
+%MASKPOWER  Trapezoidal power over a logical bin mask, integrated run by run.
+%   trapz over a non-contiguous index set would bridge the gaps between runs
+%   and count power that lies outside the mask, so each contiguous run of
+%   true bins is integrated separately and the results summed.
+    P = 0;
+    d = diff([false; idx(:); false]);
+    runStart = find(d == 1);
+    runEnd   = find(d == -1) - 1;
+    for r = 1:numel(runStart)
+        ii = runStart(r):runEnd(r);
+        if numel(ii) >= 2
+            P = P + trapz(f(ii), pxx(ii));
+        end
+    end
 end
 
 
@@ -426,18 +461,6 @@ function xProc = applyPreproc(x, fs, method)
             xProc = detrend(x, 'linear');   % detrends each column independently
         case 'botteron'
             xProc = botteronSmith(x, fs);   % filtfilt operates column-wise
-    end
-end
-
-
-% ========================================================================
-function P = bandPower(f, pxx, fc, bw)
-%BANDPOWER  Trapezoidal integration of pxx over [fc-bw, fc+bw].
-    idx = f >= (fc - bw) & f <= (fc + bw);
-    if nnz(idx) < 2
-        P = 0;
-    else
-        P = trapz(f(idx), pxx(idx));
     end
 end
 

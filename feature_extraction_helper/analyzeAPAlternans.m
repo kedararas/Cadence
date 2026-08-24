@@ -49,7 +49,7 @@ function [alternans] = analyzeAPAlternans(time, voltage, varargin)
     addParameter(p, 'PacingRate',  [],            @isnumeric);
     addParameter(p, 'Threshold',   -20,           @isnumeric);
     addParameter(p, 'RestingVm',   [],            @isnumeric);
-    addParameter(p, 'APD_levels',  [30 50 80], @isvector);
+    addParameter(p, 'APD_levels',  [30 50 80 90], @isvector);
     addParameter(p, 'PlotResults', [],            @(x) islogical(x) || isnumeric(x));
     addParameter(p, 'BeatFrames',  [],            @isnumeric);
     addParameter(p, 'Mask',        [],            @(x) isnumeric(x) || islogical(x));
@@ -112,6 +112,17 @@ function [alternans] = analyzeAPAlternans(time, voltage, varargin)
     end
 
     %% ---- Step 3: Per-beat AP metrics ----
+    % APD80/APD90 alternans, DI, and restitution are defined at those exact
+    % levels; refuse to silently substitute another column when they're absent.
+    apd30col = find(opts.APD_levels == 30, 1);
+    apd80col = find(opts.APD_levels == 80, 1);
+    apd90col = find(opts.APD_levels == 90, 1);
+    if isempty(apd80col) || isempty(apd90col)
+        error('analyzeAPAlternans:APDLevels', ...
+            'APD_levels must include 80 and 90 (got [%s]).', ...
+            num2str(opts.APD_levels(:).'));
+    end
+
     APD     = zeros(nBeats, length(opts.APD_levels));
     Vmax    = zeros(nBeats, 1);
     Vrest   = zeros(nBeats, 1);
@@ -153,8 +164,8 @@ function [alternans] = analyzeAPAlternans(time, voltage, varargin)
             end
         end
 
-        if ~any(isnan(APD(b,[1 4])))
-            tri(b) = APD(b,4) - APD(b,1);
+        if ~isempty(apd30col) && ~any(isnan(APD(b,[apd30col apd90col])))
+            tri(b) = APD(b,apd90col) - APD(b,apd30col);
         else
             tri(b) = NaN;
         end
@@ -169,10 +180,6 @@ function [alternans] = analyzeAPAlternans(time, voltage, varargin)
         end
     end
 
-    apd80col = find(opts.APD_levels == 80, 1);
-    apd90col = find(opts.APD_levels == 90, 1);
-    if isempty(apd80col), apd80col = size(APD,2); end
-    if isempty(apd90col), apd90col = size(APD,2); end
     APD80 = APD(:, apd80col);
     APD90 = APD(:, apd90col);
 
@@ -350,18 +357,25 @@ function alternans = apAlternans3D(time, voltage3D, opts)
         t_idx   = reshape(1:T_win, 1, 1, T_win);
         after_pk = t_idx > reshape(pk, R, C, 1);                % R x C x T_win
 
-        % Activation: frame of max temporal derivative (max upstroke).  The
-        % upstroke must PRECEDE the peak, so the derivative is masked at and
-        % after the peak before taking the max; otherwise a late artifact in a
-        % noisy pixel can win and place activation deep in repolarisation,
-        % swallowing the whole AP (amp <= 0).  Harmless where activation was
-        % already correct -- APD is unchanged, coverage improves a few percent.
+        % Activation: sub-frame 50%-upstroke crossing with amplitude/slope
+        % validity gating (compute_lat_50) — the same LAT definition as the
+        % app's activation/APD maps, so per-beat APDs and alternans magnitudes
+        % are directly comparable to the exported maps. Pixels with no real
+        % upstroke come back NaN instead of a forced max-dV/dt frame. Fed the
+        % RAW window: wn is per-pixel [0,1]-normalised, which would defeat the
+        % amplitude gate (every pixel's amplitude becomes 1).
+        lat50        = compute_lat_50(raw);                      % fractional frame, NaN = no upstroke
+        act_beat{j}  = lat50 * dt .* nan_mask;                   % ms, NaN outside mask/invalid
+
+        % Pre-peak max temporal derivative (for the dV/dt-alternans map only).
+        % The upstroke must PRECEDE the peak, so the derivative is masked at
+        % and after the peak before taking the max; otherwise a late artifact
+        % in a noisy pixel can win.
         dv           = diff(wn, 1, 3);                           % R x C x (T_win-1)
         td_dv        = reshape(1:(T_win-1), 1, 1, T_win-1);
         dv_pre       = dv;
         dv_pre(td_dv >= reshape(pk, R, C, 1)) = -Inf;            % keep only up to the peak
-        [dvMax, af]  = max(dv_pre, [], 3);                       % R x C
-        act_beat{j}  = double(af) * dt .* nan_mask;             % ms, NaN outside mask
+        dvMax        = max(dv_pre, [], 3);                       % R x C
         dVdt_beat{j} = dvMax / dt .* nan_mask;                  % norm.units/ms
 
         % APD at each repolarisation level (vectorised cumsum crossing)
@@ -369,7 +383,7 @@ function alternans = apAlternans3D(time, voltage3D, opts)
             thresh        = 1 - APD_levels(lv) / 100;           % e.g. 0.20 for APD80
             below         = wn <= thresh;
             [hit, rf]     = max(cumsum(below & after_pk, 3) == 1, [], 3);
-            apd           = (double(rf) - double(af)) * dt;     % ms
+            apd           = (double(rf) - lat50) * dt;          % ms, sub-frame activation anchor
             invalid       = ~logical(hit) | apd <= 0 | isnan(act_beat{j});
             apd(invalid)  = nan;
             APD_beat{j, lv} = apd;

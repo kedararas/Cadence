@@ -43,13 +43,11 @@ function results = mv_synth_cv(varargin)
 %     local CV genuinely lower, so counting them would score real physics as
 %     algorithm error.  Both mirror what the CV module does on real data.
 %
-%   NOT COVERED HERE
-%     The circle engine lives inside Cadence_Conduction_Velocity.mlapp
-%     (circle_method_cv) rather than in conduction_velocity.m, so a script
-%     cannot call it.  Extracting it to conduction_velocity_helper/ would let it
-%     be tested alongside the other two.  Likewise the end-to-end test (synthetic
-%     movie -> activation extraction -> CV) needs compute_lat_50, which is also
-%     embedded in an .mlapp.
+%   ENGINE COVERAGE
+%     All three engines are tested: gradient and polyfit via
+%     conduction_velocity.m, and the circle engine via the extracted
+%     conduction_velocity_helper/circle_method_cv.m.  The end-to-end test E
+%     uses the extracted feature_extraction_helper/compute_lat_50.m.
 %
 %   Name-value
 %     'GridSize'    [nr nc] pixels (default [128 128])
