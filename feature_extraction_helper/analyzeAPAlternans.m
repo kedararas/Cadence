@@ -684,23 +684,6 @@ end
 
 
 % =========================================================================
-function [SAI, f_peak] = spectralAlternansIndex(metric)
-    m = metric(~isnan(metric));
-    m = m - mean(m);
-    N = length(m);
-    if N < 4, SAI=0; f_peak=0.5; return; end
-
-    Y    = fft(m);
-    P    = abs(Y/N).^2;
-    f    = (0:N-1)/N;
-    band = f >= 0.40 & f <= 0.50;
-    [SAI, i] = max(P(band));
-    fb   = f(band);
-    f_peak = fb(i);
-end
-
-
-% =========================================================================
 function [shapeALT, PCs] = morphologicalAlternans(voltage, upIdx, pkLocs, nBeats, dt)
     winSamp = round(400 / dt);
     allAPs  = NaN(nBeats, winSamp);
