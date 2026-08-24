@@ -52,5 +52,10 @@ resources/
 # ---- temporary figure-panel output ----
 feature_extraction_helper/Ui/
 
+# Temporary manuscript figure-panel scripts (to be removed later)
+feature_extraction_helper/export_alternans_panels.m
+feature_extraction_helper/export_scaled_panel_group.m
+feature_extraction_helper/make_manuscript_alternans_panels.m
+
 # ---- reference PDFs (copyrighted; not for redistribution) ----
 docs/literature/
