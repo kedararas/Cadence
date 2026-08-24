@@ -144,10 +144,11 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
 
         thresh50 = peakAmps(b) - 0.50 * amplitude(b);
         thresh80 = peakAmps(b) - 0.80 * amplitude(b);
-        idx50    = find(decaySeg <= thresh50, 1, 'first');
-        idx80    = find(decaySeg <= thresh80, 1, 'first');
-        D50(b)   = idx50 * dt;
-        D80(b)   = idx80 * dt;
+        % findCrossMs interpolates the crossing (shared definition with the
+        % app's decay metrics) and returns NaN when the transient never
+        % decays to the level within the window. It expects dt in seconds.
+        D50(b)   = findCrossMs(decaySeg, thresh50, dt/1000);
+        D80(b)   = findCrossMs(decaySeg, thresh80, dt/1000);
 
         try
             fitObj  = fit(decayTime, decaySeg, 'a*exp(-x/b)+c', ...
@@ -178,14 +179,14 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
         pValue = NaN;
     end
 
-    [spectralALT, f_alt] = spectralAlternansIndex1D(amplitude);
+    [spectralALT, f_alt] = spectralAlternansIndex(amplitude);
     isAlternans = (ALT_ratio > 0.10) && (~isnan(pValue) && pValue < 0.05);
 
     D50_even = D50(2:2:end); D50_odd = D50(1:2:end);
     D80_even = D80(2:2:end); D80_odd = D80(1:2:end);
     nD = min(length(D50_even), length(D50_odd));
-    ALT_D50 = mean(abs(D50_even(1:nD) - D50_odd(1:nD)));
-    ALT_D80 = mean(abs(D80_even(1:nD) - D80_odd(1:nD)));
+    ALT_D50 = mean(abs(D50_even(1:nD) - D50_odd(1:nD)), 'omitnan');
+    ALT_D80 = mean(abs(D80_even(1:nD) - D80_odd(1:nD)), 'omitnan');
     ALT_ratio_D50 = ALT_D50 / (mean(D50, 'omitnan') + eps);
     ALT_ratio_D80 = ALT_D80 / (mean(D80, 'omitnan') + eps);
 
@@ -292,9 +293,15 @@ function alternans = caAlternans3D(time, cData3D, opts)
     % ── Global baseline correction (movmin along time, 3-D native) ─────────
     % movmin(A, k, 3) slides a k-frame minimum window along dim 3 of the
     % entire [R x C x T] array in one call — no pixel loop needed.
-    cDouble   = double(cData3D);
-    baseline3D = movmin(cDouble, blWin, 3);        % R x C x T
-    cCorr      = cDouble - baseline3D;             % baseline-subtracted
+    % Kept in single for single/integer input (movmin supports single):
+    % promoting the full R x C x T volume to double would hold ~3 double
+    % volumes at peak. Only the small R x C output maps are cast to double.
+    if isa(cData3D, 'double')
+        cWork = cData3D;
+    else
+        cWork = single(cData3D);
+    end
+    cCorr = cWork - movmin(cWork, blWin, 3);       % baseline-subtracted
 
     % ── Per-beat storage ───────────────────────────────────────────────────
     amp_beat      = cell(nBeats, 1);       % amplitude (baseline-subtracted, norm.)
@@ -316,13 +323,13 @@ function alternans = caAlternans3D(time, cData3D, opts)
         wn  = (win - lo) ./ rng;           % R x C x T_win, each pixel in [0,1]
 
         % Amplitude (raw, before normalisation — in baseline-subtracted units)
-        amp_beat{j} = (hi - lo) .* nan_mask;
+        amp_beat{j} = double(hi - lo) .* nan_mask;
 
         % Diastolic level: the pre-release baseline (lo in the beat window,
         % i.e. the minimum of the baseline-corrected signal = onset level).
         % For SR Ca2+ (Fluo-5N, signal falls on release), use hi instead;
         % the SignalType field is checked below after the loop.
-        diastolic_beat{j} = lo .* nan_mask;
+        diastolic_beat{j} = double(lo) .* nan_mask;
 
         % Onset: minimum in the first half of the window (per pixel)
         T_half = max(1, floor(T_win / 2));
@@ -358,7 +365,7 @@ function alternans = caAlternans3D(time, cData3D, opts)
             ef  = bf(j, 2);
             win = cCorr(:,:, sf:ef);
             hi_sr = max(win, [], 3);
-            diastolic_beat{j} = hi_sr .* nan_mask;
+            diastolic_beat{j} = double(hi_sr) .* nan_mask;
         end
     end
 
@@ -623,19 +630,6 @@ function [releaseALT, loadALT, Lmean, Smean, Lidx, Sidx] = ...
     nD        = min(numel(Lidx), numel(Sidx));
     D         = mean(abs(diastolicLevel(Lidx(1:nD)) - diastolicLevel(Sidx(1:nD))));
     loadALT   = D / (Lmean + eps);
-end
-
-
-% =========================================================================
-function [SAI, f_peak] = spectralAlternansIndex1D(amplitude)
-    N   = length(amplitude);
-    Y   = fft(amplitude - mean(amplitude));
-    P   = abs(Y/N).^2;
-    f   = (0:N-1)/N;
-    altBand = f >= 0.4 & f <= 0.5;
-    [SAI, idx] = max(P(altBand));
-    fBand   = f(altBand);
-    f_peak  = fBand(idx);
 end
 
 
