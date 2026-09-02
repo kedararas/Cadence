@@ -71,8 +71,11 @@ visibly standalone costs about a hundred lines and settles the question at a gla
 ```matlab
 addpath('manual_validation_helper');
 
-% 1. Draw the pixel sample — ONCE per recording, shared by all reviewers
-manifest = mv_sample_pixels('rat-conditioned.mat', 'CAM1', 150, 'BeatIndex', 5);
+% 1. Draw the pixel sample — ONCE per recording, shared by all reviewers.
+%    Reviewers mark CAM1_average by default, the same ensemble-averaged beat
+%    feature extraction uses. 'grid' lays the pixels on a lattice so they can
+%    be interpolated into a manual map; 'stratified' draws them by SNR tercile.
+manifest = mv_sample_pixels('rat-conditioned.mat', 'CAM1', 100, 'Sampling', 'grid');
 
 % 2. Each reviewer marks the same pixels, independently and blinded
 mv_mark(manifest.manifest_file, 'AA');
@@ -86,10 +89,124 @@ tbl = mv_derive({'..._AA_marks.mat', '..._SP_marks.mat', '..._EM_marks.mat'});
 stats = mv_compare(tbl, 'rat-metrics.mat', 'Field', 'apd_data');
 ```
 
+For calcium, point step 1 at the calcium camera and mark that channel separately:
+`mv_sample_pixels('pig-conditioned.mat', 'CAM2', 100, 'Sampling', 'grid')`. Rabbit
+recordings are voltage-only, so they have no calcium arm.
+
 Run `mv_selftest` first. It builds a synthetic recording whose true APD80 is known
 analytically, simulates three reviewers, runs the whole non-interactive path, and
 asserts that a deliberately injected bias is recovered. If it passes, everything
 downstream of the human clicking is known good.
+
+### What runs per recording, and what runs once
+
+Only the first group involves reviewers. The rest are automated or synthetic, run
+**once for the whole study**, and are not repeated per recording — a common source of
+confusion, since they live in the same folder.
+
+| | When | What it covers |
+|---|---|---|
+| `mv_sample_pixels` → `mv_mark` ×3 → `mv_derive` → `mv_compare` | once per **recording × channel** | activation, APD/CaTD at every level, amplitude |
+| the same chain with `'Mode','alternans'` | once per **alternans-positive recording × channel** | amplitude alternans |
+| `mv_paced_df` | **once**, across every paced recording you own | dominant frequency, against the pacing hardware |
+| `mv_synth_cv`, `mv_cv_envelope`, `mv_lat_quantization` | **once** | conduction velocity, against a synthetic planar wave |
+| `mv_rise_test` | **once** (and after any edit to `extract_rise_time`) | rise-time algorithm, against analytic truth |
+| `mv_selftest` | **once**, before recruiting reviewers | the harness itself |
+
+`mv_rise_test` and `mv_selftest` are regression tests, not study instruments: they
+take no reviewer input and produce no per-recording result. `mv_rise_test` earns its
+place in the coverage table the same way `mv_synth_cv` does — as synthetic ground
+truth for a metric no human can reference — but it is a single pass/fail run, not
+something to repeat per heart.
+
+## Mark what the software measured: the ensemble-averaged beat
+
+`mv_sample_pixels` defaults to `'Source', 'ensemble'`, which points the reviewers at
+`CAM<n>_average` rather than the raw stack.
+
+This follows the pipeline. Ensemble averaging is CADENCE's recommended conditioning
+step, and feature extraction takes `avg_cmos_data` whenever that checkbox is ticked —
+so every metric except alternans is derived from the averaged beat. Marking the same
+array is what makes the comparison like-for-like. It also removes beat-to-beat
+variation as a source of apparent disagreement, which would otherwise inflate the
+limits of agreement without telling you anything about the software.
+
+**And it dissolves a problem that would otherwise block half the metrics.** CADENCE
+stores some metrics as durations and others as times measured from the start of its own
+analysis window:
+
+- **Durations** — `apd_data`, `ca_data`, `ap_rise_times`, `ca_rise_times`, `ca_tau`,
+  `vc_delay`. Differences of two times, so any origin cancels on both sides.
+- **Window-relative times** — `act_times`, `rep_data`, `ca_rep_data`.
+
+On the raw arm, a reviewer clicks in absolute recording time while the software counts
+from its own window start, so differencing them uncorrected gives a constant bias of
+`(2 - start_frame)` frames — for a window starting at frame 1001 at 1 kHz, −999 ms on
+every pixel, with immaculate-looking scatter and correlation. A silent failure.
+
+On the ensemble arm that offset does not exist: both sides start at frame 1 of the same
+averaged array, and the only residual is the 1-based index convention (`compute_lat_50`
+returns a 1-based fractional frame; `mv_mark`'s axis is `(frame-1)*dt`), which is a
+single frame and is corrected automatically. `mv_selftest` verifies activation time
+validates to a bias of +0.05 ms with no window information involved at all.
+
+`mv_compare` classifies every field, applies the right correction for the arm in use,
+and **refuses** rather than guessing when it cannot verify one. It also sanity-checks
+the corrected values against the marked window and warns if most fall outside — the
+metrics file does not record which array feature extraction actually used
+(`ensemble || isempty(oap_window)` decides at run time and nothing is saved), so that
+check is the only available guard against the two sides having looked at different data.
+
+**Alternans is the exception, and is refused on this arm.** Averaging is precisely what
+removes the beat-to-beat alternation, so `'Source', 'ensemble'` with `NumBeats > 1`
+errors. Run the alternans session with `'Source', 'raw'`.
+
+```matlab
+% the workhorse arm — ensemble by default
+manifest = mv_sample_pixels('rat-conditioned.mat', 'CAM1', 100, 'Sampling', 'grid');
+
+% the alternans arm — raw, two beats
+alt = mv_sample_pixels('rat-conditioned.mat', 'CAM1', 75, 'Source', 'raw', ...
+                       'NumBeats', 2, 'MetricsFile', 'rat-metrics.mat');
+```
+
+**One thing to state carefully in the methods.** `CAM<n>_SNR` is computed on the RAW
+stack, before averaging (Signal Conditioning runs it first). So under this arm the SNR
+strata describe single-beat signal quality while the reviewers are marking a much
+cleaner averaged trace. That is the useful reading — agreement as a function of the
+underlying data quality — but it must be reported that way, not as the SNR of the trace
+on screen.
+
+For the raw arm, pass `'MetricsFile'` so the reviewers mark the same beat CADENCE
+analysed; it reads only the window, never a metric value, so blinding is unaffected.
+
+## Addressing the right map: `Camera` and `Slot`
+
+`ep_metrics` entries are `{camera, slot}` — the row is the camera (the `extract_*`
+drivers loop `for i = 1:num_files` and pass `i` straight in as the camera argument),
+and the column is a data slot: 1 is the masked map, 2 the background image, 5 the
+camera label, 6 the unmasked map.
+
+The old `FileIndex`/`CamIndex` names described this backwards and are now rejected with
+an error. They were dangerous rather than merely confusing: `CamIndex, 2` returned the
+**background image**, which is numeric and correctly sized, so it sailed through and
+produced confident nonsense. The old auto-resolve-by-size had the same failure — it
+took the first `[nr nc]` match, which on a rig with two voltage cameras is camera 1's
+map regardless of who was marked.
+
+`mv_compare` now takes the camera from the manifest (the camera the reviewers actually
+marked) and addresses the cell directly, erroring if the slot is empty or the wrong
+shape. Override with `'Camera'` and `'Slot'`.
+
+Two smaller corrections in the same pass. `act_times` is masked with **zeros** rather
+than NaN, so off-tissue pixels arrived as a finite 0, passed the `isfinite` filter and
+dragged the bias negative; those are now treated as missing. And the inter-observer
+benchmark is computed on **all** marked rows rather than the software-resolved subset —
+conditioning the human noise floor on the pixels CADENCE handled removes exactly the
+hard ones from the human side and flatters the comparison the report leads with.
+`mv_derive` also now refuses to pool marks files from different manifests, since the
+`pixel` column is an index into the manifest and pooling makes it mean different
+locations for different reviewers.
 
 ## The four design decisions that matter
 
@@ -110,12 +227,38 @@ repolarization level, and the reviewer then marks where the trace crosses it. Th
 converts an unreliable judgement ("where is 80% repolarized?") into a reliable one
 ("where does the trace cross this line?") without automating the decision.
 
-**Stratified, seeded sampling.** Pixels are drawn from SNR terciles with a fixed seed.
-Stratification lets `mv_compare` report agreement *as a function of SNR*, which is an
-operating envelope users actually need and which pre-empts the obvious criticism that
-validation used only clean signals. The seed makes the pixel list a pre-registered
-choice — hand-picking pixels, or redrawing until the numbers look good, invalidates
-the exercise.
+**Activation gets a guide line too, and it must.** CADENCE times activation at the
+50% baseline-to-peak crossing of the upstroke (`compute_lat_50`), not at maximum
+dV/dt. Asking a reviewer for "the upstroke" invites them to mark max dV/dt, and the
+offset between the two definitions would then be booked as software-versus-human
+disagreement when it is really the two sides measuring different quantities. So the
+third click is marked against a 50% guide line, and `mv_mark`'s `ActPercent` defaults
+to 50 to match the code under test. This matters twice over: APD is measured from the
+activation click, so it inherits any error there.
+
+**Seeded sampling, in one of two layouts.** Either way the seed makes the pixel list
+a pre-registered choice — hand-picking pixels, or redrawing until the numbers look
+good, invalidates the exercise.
+
+- `'stratified'` (default) draws equal numbers from each SNR tercile. This lets
+  `mv_compare` report agreement *as a function of SNR*, an operating envelope users
+  actually need, and pre-empts the obvious criticism that validation used only clean
+  signals.
+- `'grid'` places the same number of pixels on a regular lattice instead. It costs
+  the same marking effort but the marks can be **interpolated into a manual map**,
+  which scattered pixels cannot be — so the same clicks yield the map panels, the
+  agreement statistics *and* the SNR envelope. SNR strata are assigned afterwards
+  (post-stratified, by rank so ties cannot empty a stratum). Points that fall off
+  the tissue mask are dropped rather than nudged to a neighbour, since moving them
+  would bend the lattice and cost the even spacing that is the whole point.
+
+  The honesty rule that goes with grid mode: interpolate for the **map panels only**.
+  Every statistic is computed at the marked points, and the difference map is plotted
+  as dots at those points, never interpolated.
+
+  A square lattice can only yield certain counts (8×8, 9×9, 11×11), so `n_pixels` is
+  a target rather than a quota. The stride chosen and the count actually drawn are
+  printed and stored in the manifest.
 
 **Raw clicks are the record.** `mv_mark` saves click coordinates, not metrics.
 `mv_derive` computes values from them afterwards, so a definition can change —
@@ -133,37 +276,75 @@ with.
 ## Scope
 
 Manual marking is the right ground truth for repolarization time, APD and CaTD at any
-percentage, amplitude, and alternans ratios. It is **not** the right tool for
-everything:
+percentage, amplitude, and amplitude-alternans ratios. It is **not** the right tool
+for everything. This is the coverage table:
 
-| Metric | Ground truth to use |
-|---|---|
-| APD, CaTD, repolarization, alternans | This harness |
-| Activation time | This harness, but weak — humans judge max dV/dt poorly. Prefer the synthetic wave. |
-| Conduction velocity | Synthetic planar wave at known velocity; cross-engine agreement (gradient / polyfit / circle) |
-| Dominant frequency | Paced recordings — DF must equal 1/CL, an exact truth already in your data |
-| Rotor / phase singularity | No ground truth available. Report as qualitative demonstration. |
+| Metric | Ground truth | Notes |
+|---|---|---|
+| Activation time | This harness | Marked against a 50% upstroke guide, matching `compute_lat_50`. Not weak, provided the guide is used — see above. |
+| APD 30/50/80/90 | This harness | One marking pass covers every level: `mv_derive` recomputes from raw clicks, so no one re-marks for a new definition. Repolarization time and APD are **not independent evidence** — same four clicks. |
+| Repolarization time | This harness | Comes from `extract_apd` (which writes `rep_data` from its own columns 7/8/9), so it is min-max normalized and sub-frame interpolated — clean. The legacy `extract_rep` is a fallback only, reachable when APD is not selected; see below. |
+| CaTD at any level | This harness | Voltage and calcium are separate marking passes on separate cameras. |
+| Amplitude alternans | This harness | `'alternans'` mode. Validate on recordings that actually alternate — near zero the ratio is noise-dominated and Bland–Altman degenerates. |
+| APD / CaTD alternans | Not yet | Needs a 2-beat APD mode in `mv_mark`. Note the software averages over *all* beat pairs while a reviewer sees two, so the estimators differ. |
+| dV/dt alternans, spectral alternans index | None | SAI is an FFT over the beat series; there is nothing for a human to mark. |
+| AP / Ca rise time | Synthetic (`mv_rise_test`) | **Not** manually marked — `mv_mark` has no rise-time mode. Covered by analytic ground truth instead, the same way CV is. Valid only from the 2026-09-01 fix below; earlier builds carry a ~+1 frame bias and fail at low SNR. Adding a manual arm would need a new mode, and is only worth it for calcium — see below. |
+| Decay constant (τ) | None | An exponential fit, not a crossing. A reviewer cannot supply a reference for it. |
+| Conduction velocity | Synthetic planar wave | `mv_synth_cv`, `mv_cv_envelope`, `mv_lat_quantization`. Validated — just not manually. |
+| Dominant frequency | Paced recordings | `mv_paced_df`. DF must equal 1/CL, an exact truth already in your data, at n in the thousands. |
+| Rotor / phase singularity | None available | Report as qualitative demonstration, or build an analytic rotating spiral with a known PS track. |
 
 `ap_waveform` inside `mv_selftest` is the AP model to reuse for the synthetic-wave
 work; propagate it across a grid at a known velocity and the CV ground truth follows.
 
-## Draft Methods text
 
-> Automated feature extraction was validated against blinded manual measurement.
-> For each recording, N pixels were drawn at random from within the tissue mask,
-> stratified into equal groups by signal-to-noise ratio using a fixed random seed
-> fixed before marking began. Three reviewers independently marked fiducial points on
-> each sampled pixel's conditioned optical trace — diastolic baseline, peak,
-> activation, and the crossing at X% repolarization — using a purpose-built marking
-> tool that shares no code with the CADENCE feature-extraction routines and that
-> displayed neither the automated result nor the pixel's location. Pixels were
-> presented in an order randomized per reviewer. Metric values were computed from the
-> recorded fiducial times after marking was complete. Agreement between automated and
-> manual values is reported as bias and 95% limits of agreement (Bland–Altman), the
-> proportion of pixels within X ms, and Pearson correlation, overall and by SNR
-> stratum. Pairwise inter-observer differences on the same pixels are reported as the
-> benchmark against which automated agreement should be judged.
 
-Fill in N, X, and the tolerances from your run. State the conditioned-not-raw choice
-explicitly: this validates feature extraction, not signal conditioning, and mixing
-the two makes any disagreement unattributable.
+## Study design: how to spend the marking hours
+
+The binding constraint is reviewer time, and the unit of work is
+**recording × channel × marking mode**, not recording. Running every mode on every
+recording multiplies out to roughly 6,300 pixel visits per reviewer (~20 hours), which
+nobody finishes — and reviewers who quit halfway leave you a biased subset. The
+allocation below buys the same claims for about a quarter of that.
+
+**Two arms, because they buy different things.**
+
+- **Overlap arm — 4 recordings (one per species), all 3 reviewers.** Its only job is
+  to estimate one variance component: how much two humans disagree on the same pixel.
+  That saturates fast. What it needs is *species* coverage, not recording count, since
+  5 ms is ~10% of a rat APD80 but ~2.4% of a pig's. A fifth or twelfth overlap
+  recording just tightens a CI on a number used qualitatively.
+- **Breadth arm — 12 recordings, one reviewer each.** Its job is to sample the
+  replicate unit, and the replicate unit is the **heart**. Pixels within a heart are
+  spatially correlated pseudo-replicates, so the marginal information in the 150th
+  pixel of a heart already marked is close to nothing while the first pixel of a new
+  heart is worth a lot. A breadth recording costs a third of an overlap recording.
+
+Sixteen recordings total is also what the corpus allows: rabbit has exactly four.
+
+**Rotate reviewers across species in the breadth arm.** Give each reviewer one
+recording per species, not four of one species — otherwise reviewer identity is
+confounded with species and any species difference in agreement is uninterpretable.
+
+**~100 pixels per recording, on a grid.** Cheaper than 150 and strictly more useful,
+for the spatial-correlation reason above plus the map panels.
+
+**Alternans is a separate, targeted session.** It is a conditional metric: it only
+exists where the tissue alternates. Run it on the two or three recordings that
+actually do, all three reviewers, ~75 pixels — under an hour each, and it yields an
+inter-observer benchmark for alternans as well.
+
+| Arm | Recordings | Channel-sessions per reviewer | Pixels |
+|---|---|---|---|
+| Overlap (3 reviewers) | 4 | 7 (4 voltage + 3 calcium) | 700 |
+| Breadth (1 reviewer each) | 12 | 7 (4 voltage + 3 calcium) | 700 |
+| Alternans (3 reviewers) | 2–3 | ~3 | 225 |
+
+About 1,625 pixel visits per reviewer, mostly four-click: 5–6 hours. Calcium counts
+are 3-of-4 and 9-of-12 because rabbit is voltage-only.
+
+The cost of the split: the breadth arm has no within-recording inter-observer
+estimate, so a disagreeing breadth recording cannot be separated from its reviewer.
+Rotation removes the systematic part; the rest is a stated limitation.
+
+

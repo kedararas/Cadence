@@ -43,10 +43,21 @@ function tbl = mv_derive(marks_files, varargin)
 
         if isempty(mode_seen)
             mode_seen = m.mode;
+            manifest_seen = m.manifest_file;
         elseif ~strcmp(mode_seen, m.mode)
             error('mv_derive:mixedModes', ...
                   'Cannot combine marks from different modes (''%s'' and ''%s'').', ...
                   mode_seen, m.mode);
+        elseif ~strcmp(manifest_seen, m.manifest_file)
+            % The pixel column is an index INTO THE MANIFEST.  Pooling marks
+            % from two manifests makes pixel k mean different pixels for
+            % different reviewers, so mv_compare's intersect() would pair
+            % unrelated locations — inflating the inter-observer spread and
+            % making the software look better by comparison.
+            error('mv_derive:mixedManifests', ...
+                  ['Marks files reference different manifests:\n  %s\n  %s\n' ...
+                   'Reviewers must mark the SAME pixel list for the inter-observer ' ...
+                   'comparison to mean anything.'], manifest_seen, m.manifest_file);
         end
 
         M = load(m.manifest_file);
@@ -104,8 +115,12 @@ function tbl = mv_derive(marks_files, varargin)
                 end
         end
 
-        ud = struct('mode', m.mode, 'percent', m.percent, 'cam', m.cam, ...
-                    'manifest_file', m.manifest_file, 'metrics_hint', '');
+        % act_percent records which upstroke crossing the reviewers were shown
+        % as the activation guide, so a table can be traced back to the
+        % definition it was marked against.  Absent in pre-guide marks files.
+        if isfield(m, 'act_percent'); act_pct = m.act_percent; else; act_pct = NaN; end
+        ud = struct('mode', m.mode, 'percent', m.percent, 'act_percent', act_pct, ...
+                    'cam', m.cam, 'manifest_file', m.manifest_file, 'metrics_hint', '');
         tbl = [tbl; t]; %#ok<AGROW>
     end
 

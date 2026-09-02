@@ -20,13 +20,25 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
 %   MODES
 %     'apd' (default)  Four clicks per pixel: diastolic baseline, peak,
 %                      activation, and the crossing at 'Percent' repolarization.
-%                      After baseline and peak are set, a guide line is drawn at
-%                      the repolarization level so the reviewer marks WHERE the
-%                      trace crosses it rather than eyeballing a percentage.
 %                      Yields activation time, APD/CaTD at 'Percent', amplitude.
 %     'alternans'      Three clicks: baseline, peak of beat 1, peak of beat 2.
 %                      Yields the two amplitudes and their ratio.  Build the
 %                      manifest with 'NumBeats', 2.
+%
+%   GUIDE LINES ('apd' mode)
+%   Once baseline and peak are placed, the level for the click being asked for
+%   is drawn across the axes, so the reviewer answers "where does the trace
+%   cross this line?" instead of "where is 80% repolarized?".  The first is a
+%   judgement humans make reliably; the second is not.
+%
+%   This applies to ACTIVATION as much as to repolarization, and that matters:
+%   CADENCE times activation at the 50% baseline-to-peak crossing of the
+%   upstroke (compute_lat_50).  Asking a reviewer for "the upstroke" invites
+%   them to mark maximum dV/dt, which is a different definition — the resulting
+%   offset would be booked as software-versus-human disagreement when it is
+%   really the two sides measuring different things.  'ActPercent' therefore
+%   defaults to 50 to match the code under test; change it only if the pipeline
+%   definition changes.
 %
 %   HOW A CLICK IS INTERPRETED
 %   The reviewer's click fixes a TIME.  The harness then reads the trace value
@@ -51,12 +63,15 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
 %   Name-value
 %     'Mode'         'apd' (default) | 'alternans'
 %     'Percent'      repolarization percentage for 'apd' (default 80)
+%     'ActPercent'   upstroke percentage defining activation (default 50, to
+%                    match compute_lat_50)
 %     'BaselineWin'  half-width in ms for the baseline median (default 5)
 %     'Output'       marks path (default alongside the manifest)
 
     p = inputParser;
     p.addParameter('Mode',        'apd', @(v) any(strcmpi(v, {'apd','alternans'})));
     p.addParameter('Percent',     80,    @(v) isnumeric(v) && isscalar(v) && v > 0 && v < 100);
+    p.addParameter('ActPercent',  50,    @(v) isnumeric(v) && isscalar(v) && v > 0 && v < 100);
     p.addParameter('BaselineWin', 5,     @(v) isnumeric(v) && isscalar(v) && v > 0);
     p.addParameter('Output',      '',    @(v) ischar(v) || isstring(v));
     p.parse(varargin{:});
@@ -86,7 +101,18 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
         fn = fieldnames(S); is_struct = structfun(@isstruct, S);
         d = S.(fn{find(is_struct, 1)});
     end
-    X  = d.(manifest.cam);
+    % The manifest names the array the reviewers see — CAM<n>_average under the
+    % recommended ensemble workflow, CAM<n> for the raw single-beat arm.  Older
+    % manifests predate the field and were always raw.
+    if isfield(manifest, 'data_field') && ~isempty(manifest.data_field)
+        data_field = char(manifest.data_field);
+    else
+        data_field = char(manifest.cam);
+    end
+    if ~isfield(d, data_field)
+        error('mv_mark:noField', '%s has no field %s.', manifest.conditioned_file, data_field);
+    end
+    X  = d.(data_field);
     nt = size(X, 3);
     wf = manifest.window_frames;
     T  = double(reshape(X, [], nt));
@@ -104,11 +130,17 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
     if isfile(o.Output)
         R = load(o.Output);
         marks = R.marks;
-        if ~strcmp(marks.mode, o.Mode) || marks.percent ~= o.Percent
+        % Marks files written before ActPercent existed carry the 50% behaviour
+        % this default reproduces, so treat a missing field as 50 rather than
+        % refusing to resume them.
+        if isfield(marks, 'act_percent'); prev_act = marks.act_percent; else; prev_act = 50; end
+        if ~strcmp(marks.mode, o.Mode) || marks.percent ~= o.Percent || ...
+           (strcmp(o.Mode, 'apd') && prev_act ~= o.ActPercent)
             error('mv_mark:resumeMismatch', ...
-                  ['%s was started with Mode=''%s'', Percent=%g but you passed ' ...
-                   'Mode=''%s'', Percent=%g. Use the original settings or a new Output file.'], ...
-                  o.Output, marks.mode, marks.percent, o.Mode, o.Percent);
+                  ['%s was started with Mode=''%s'', Percent=%g, ActPercent=%g but you ' ...
+                   'passed Mode=''%s'', Percent=%g, ActPercent=%g. Use the original ' ...
+                   'settings or a new Output file.'], ...
+                  o.Output, marks.mode, marks.percent, prev_act, o.Mode, o.Percent, o.ActPercent);
         end
         fprintf('Resuming %s: %d of %d pixels already marked.\n', ...
                 o.Output, sum(marks.done | marks.skipped), npix);
@@ -186,6 +218,7 @@ function marks = new_marks(manifest, manifest_file, reviewer, o, npix)
     marks.reviewer        = reviewer;
     marks.mode            = o.Mode;
     marks.percent         = o.Percent;
+    marks.act_percent     = o.ActPercent;
     marks.baseline_win_ms = o.BaselineWin;
     marks.order_seed      = seed;
     marks.order           = randperm(npix)';
@@ -213,12 +246,12 @@ function n = click_count(mode)
 end
 
 
-function lbl = click_label(mode, j, pct)
+function lbl = click_label(mode, j, pct, act_pct)
     if strcmp(mode, 'apd')
         switch j
             case 1, lbl = 'DIASTOLIC BASELINE (click in diastole, before the upstroke)';
             case 2, lbl = 'PEAK (click at the time of the peak)';
-            case 3, lbl = 'ACTIVATION (click on the upstroke)';
+            case 3, lbl = sprintf('ACTIVATION — click where the UPSTROKE crosses the %g%% guide line', act_pct);
             case 4, lbl = sprintf('REPOLARIZATION — click where the trace crosses the %g%% guide line', pct);
         end
     else
@@ -256,21 +289,26 @@ function [res, action] = mark_one(fig, t_ms, y, k, npix, o, nclick)
                  'FontWeight', 'bold', 'VerticalAlignment', 'bottom');
         end
 
-        % The repolarization guide: only meaningful once baseline and peak exist.
-        % It converts an unreliable judgement ("where is 80% repolarized?") into
-        % a reliable one ("where does the trace cross this line?").
+        % Guide lines, drawn as each becomes relevant and then left up so the
+        % reviewer can check the final placement.  Both are only meaningful
+        % once baseline and peak exist, since both levels are defined from
+        % them.  See the header for why activation gets one too.
         if strcmp(o.Mode, 'apd') && size(res, 1) >= 2
             vb = trace_at(t_ms, y, res(1,1), o.BaselineWin);
             vp = trace_at(t_ms, y, res(2,1), 0);
-            lv = vp - o.Percent / 100 * (vp - vb);
-            plot(ax, [t_ms(1) t_ms(end)], [lv lv], '--', 'Color', [0.10 0.60 0.30], 'LineWidth', 1.2);
-            text(ax, t_ms(1), lv, sprintf(' %g%% level ', o.Percent), 'Color', [0.10 0.60 0.30], ...
-                 'VerticalAlignment', 'bottom', 'FontWeight', 'bold');
+            if j >= 3
+                la = vb + o.ActPercent / 100 * (vp - vb);
+                guide_line(ax, t_ms, la, sprintf(' %g%% upstroke ', o.ActPercent), [0.85 0.45 0.05]);
+            end
+            if j >= 4
+                lv = vp - o.Percent / 100 * (vp - vb);
+                guide_line(ax, t_ms, lv, sprintf(' %g%% repolarization ', o.Percent), [0.10 0.60 0.30]);
+            end
         end
 
         if j <= nclick
             title(ax, {sprintf('Pixel %d of %d   —   click %d of %d', k, npix, j, nclick), ...
-                       click_label(o.Mode, j, o.Percent), ...
+                       click_label(o.Mode, j, o.Percent, o.ActPercent), ...
                        'u undo   r restart   s skip   b back   q save+quit'}, ...
                       'FontSize', 11);
         else
@@ -356,6 +394,14 @@ function marks = store(marks, i, res, o, t_ms, y)
         marks.t_peak2_ms(i) = res(3, 1);
         marks.v_peak2(i)    = trace_at(t_ms, y, res(3, 1), 0);
     end
+end
+
+
+function guide_line(ax, t_ms, level, label, col)
+%GUIDE_LINE  Horizontal reference line the reviewer marks a crossing against.
+    plot(ax, [t_ms(1) t_ms(end)], [level level], '--', 'Color', col, 'LineWidth', 1.2);
+    text(ax, t_ms(1), level, label, 'Color', col, ...
+         'VerticalAlignment', 'bottom', 'FontWeight', 'bold');
 end
 
 

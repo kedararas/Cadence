@@ -22,31 +22,60 @@ function stats = mv_compare(tbl, metrics_file, varargin)
 %     tbl           output of mv_derive (all reviewers pooled)
 %     metrics_file  the *-metrics.mat produced by Feature Extraction
 %
+%   DURATIONS VS TIMES — read this before comparing anything new
+%   CADENCE metrics come in two kinds, and only one of them can be differenced
+%   against a manual mark directly.
+%
+%     DURATIONS (apd_data, ca_data, rise times, ca_tau, vc_delay) are
+%       differences of two times, so the window origin cancels on both sides.
+%       These pair directly.
+%
+%     WINDOW-RELATIVE TIMES (act_times, rep_data, ca_rep_data) are measured in
+%       frames from the start of CADENCE's OWN analysis window, whereas a
+%       reviewer's click is an absolute time in the recording.  Differencing
+%       them without correction yields a constant bias of (2 - start_frame)
+%       frames — hundreds of milliseconds — and Bland-Altman still looks
+%       immaculate, because the offset is constant.  This function now applies
+%       the correction and REFUSES the comparison when it cannot verify it.
+%
 %   Name-value
 %     'Field'      ep_metrics field to compare against (default 'apd_data')
 %     'ManualVar'  column of tbl to compare (default: 'apd_ms' for apd mode,
 %                  'alt_ratio' for alternans mode)
-%     'FileIndex'  index into the ep_metrics cell (default: auto-detect)
-%     'CamIndex'   index into the ep_metrics cell (default: auto-detect)
+%     'Camera'     which camera's map to use.  Default: taken from the
+%                  manifest's cam ("CAM2" -> 2), which is the camera the
+%                  reviewers actually marked.
+%     'Slot'       which of the six data slots holds the map (default 1).
 %     'Tolerance'  tolerances to report, in the metric's units (default [5 10])
 %     'Plot'       true (default) — Bland-Altman + agreement vs SNR
 %
-%   Cell orientation: ep_metrics cells are indexed inconsistently across the
-%   codebase ({file,cam} in some places, {cam,file} in others), so by default
-%   this resolves the map POSITIONALLY — it looks for the cell element whose
-%   size matches the recording's [rows cols].  It prints what it chose.  Check
-%   that line before you trust the numbers; override with FileIndex/CamIndex.
+%   CELL LAYOUT.  ep_metrics entries are {camera x slot}: the ROW is the camera
+%   (the extract_* drivers loop `for i = 1:num_files` and pass `i` straight in
+%   as the camera argument), and the COLUMN is a data slot 1-6 — slot 1 is the
+%   masked map, 2 the background image, 5 the camera label, 6 the unmasked map.
+%   The old FileIndex/CamIndex names described this backwards and are rejected:
+%   passing CamIndex=2 returned the BACKGROUND IMAGE, which is numeric and
+%   correctly sized, so it produced confident nonsense.
 
     p = inputParser;
     p.addParameter('Field',     'apd_data', @(v) ischar(v) || isstring(v));
     p.addParameter('ManualVar', '',         @(v) ischar(v) || isstring(v));
-    p.addParameter('FileIndex', [],         @(v) isempty(v) || isscalar(v));
-    p.addParameter('CamIndex',  [],         @(v) isempty(v) || isscalar(v));
+    p.addParameter('Camera',    [],         @(v) isempty(v) || isscalar(v));
+    p.addParameter('Slot',      1,          @(v) isnumeric(v) && isscalar(v));
     p.addParameter('Tolerance', [5 10],     @isnumeric);
     p.addParameter('Plot',      true,       @islogical);
+    p.addParameter('FileIndex', [],         @(v) isempty(v));
+    p.addParameter('CamIndex',  [],         @(v) isempty(v));
     p.parse(varargin{:});
     o = p.Results;
     o.Field = char(o.Field);
+
+    if ~isempty(o.FileIndex) || ~isempty(o.CamIndex)
+        error('mv_compare:renamedIndex', ...
+              ['FileIndex/CamIndex have been replaced by Camera/Slot, because the old ' ...
+               'names had the layout backwards. ep_metrics cells are {camera, slot}: ' ...
+               'pass ''Camera'', <camera number> and ''Slot'', 1 for the masked map.']);
+    end
 
     ud = tbl.Properties.UserData;
     if isempty(o.ManualVar)
@@ -71,14 +100,15 @@ function stats = mv_compare(tbl, metrics_file, varargin)
         error('mv_compare:noField', 'ep_metrics.%s not present in %s.', o.Field, metrics_file);
     end
 
-    % Recording geometry, used to resolve which cell element is the map.  The
-    % manifest is authoritative because it was written from the conditioned file
-    % the reviewers actually marked.
+    % Recording geometry and camera.  The manifest is authoritative because it
+    % was written from the conditioned file the reviewers actually marked.
+    manifest = [];
     nr = NaN; nc = NaN;
     mf = char(ud_field(ud, 'manifest_file', ''));
     if ~isempty(mf) && isfile(mf)
         MM = load(mf);
-        nr = MM.manifest.size(1); nc = MM.manifest.size(2);
+        manifest = MM.manifest;
+        nr = manifest.size(1); nc = manifest.size(2);
     end
     if ~isfinite(nr)
         cam = char(ud_field(ud, 'cam', 'CAM1'));
@@ -92,13 +122,47 @@ function stats = mv_compare(tbl, metrics_file, varargin)
         end
     end
 
-    [map, how] = resolve_map(d.ep_metrics.(o.Field), nr, nc, o.FileIndex, o.CamIndex);
+    % Which camera?  Auto-resolving by size cannot tell CAM1's map from CAM2's
+    % when both are populated and the same shape, and it silently takes the
+    % first — so on a rig with two voltage cameras it would compare the wrong
+    % one.  The manifest records the camera the reviewers marked; use it.
+    camera = o.Camera;
+    if isempty(camera)
+        camstr = char(ud_field(ud, 'cam', ''));
+        if isempty(camstr) && ~isempty(manifest); camstr = char(manifest.cam); end
+        camera = str2double(regexprep(camstr, '\D', ''));
+        if ~isfinite(camera) || camera < 1
+            error('mv_compare:noCamera', ...
+                  ['Could not determine the camera from the manifest (cam = ''%s''). ' ...
+                   'Pass ''Camera'', <number> explicitly.'], camstr);
+        end
+    end
+
+    [map, how] = resolve_map(d.ep_metrics.(o.Field), nr, nc, camera, o.Slot);
     fprintf('Using ep_metrics.%s -> %s\n', o.Field, how);
 
     % ---- pair up ----
     lin  = sub2ind([nr nc], tbl.row, tbl.col);
     soft = double(map(lin));
     man  = double(tbl.(o.ManualVar));
+
+    % Kind check and origin correction.  See the header: a window-relative time
+    % cannot be differenced against an absolute manual click without shifting
+    % it into the recording's timeline first, and the failure is silent.
+    [soft, kind_note] = align_origin(soft, o.Field, o.ManualVar, manifest, d);
+    if ~isempty(kind_note); fprintf('%s\n', kind_note); end
+
+    % act_times is masked with ZEROS rather than NaN (act .* mask, where the
+    % mask is 1/NaN elsewhere but 0 here), so off-tissue pixels arrive as a
+    % finite 0 and would pass the isfinite filter and drag the bias negative.
+    % A genuine LAT is at least one frame, so 0 means "no value".
+    if any(strcmp(o.Field, {'act_times'}))
+        nz = (soft == 0);
+        if any(nz)
+            fprintf('  %d pixel(s) with act_times == 0 treated as missing (zero-masked background).\n', sum(nz));
+            soft(nz) = NaN;
+        end
+    end
 
     ok = isfinite(soft) & isfinite(man);
     if ~any(ok)
@@ -144,7 +208,12 @@ function stats = mv_compare(tbl, metrics_file, varargin)
     end
 
     % ---- inter-observer ----
-    stats.interobserver = interobserver(T, o.ManualVar, o.Tolerance);
+    % Computed on ALL marked rows, not the software-resolved subset.  This is
+    % the noise floor of manual measurement, which exists whether or not
+    % CADENCE returned a value; conditioning it on the pixels CADENCE handled
+    % removes exactly the hard ones from the human side and flatters the
+    % comparison the whole report leads with.
+    stats.interobserver = interobserver(tbl, o.ManualVar, o.Tolerance);
 
     % ---- report ----
     fprintf('\n--- %s vs manual %s ---\n', o.Field, o.ManualVar);
@@ -196,10 +265,20 @@ function v = ud_field(ud, f, dflt)
 end
 
 
-function [map, how] = resolve_map(C, nr, nc, fi, ci)
-%RESOLVE_MAP  Pull the [nr x nc] map out of an ep_metrics entry.
+function [map, how] = resolve_map(C, nr, nc, camera, slot)
+%RESOLVE_MAP  Pull the [nr x nc] map out of an ep_metrics {camera, slot} entry.
+%
+%   Addressed, not guessed.  The previous version scanned for any element whose
+%   size matched [nr nc] and took the first — which also matches the background
+%   image in slot 2, and matches camera 1's map when the caller wanted camera 2.
+%   Both failures are silent and produce plausible statistics.
 
     if isnumeric(C)
+        if ~isequal(size(C), [nr nc])
+            error('mv_compare:sizeMismatch', ...
+                  'ep_metrics entry is numeric %s but the recording is %dx%d.', ...
+                  mat2str(size(C)), nr, nc);
+        end
         map = C; how = sprintf('numeric %s', mat2str(size(C)));
         return;
     end
@@ -207,37 +286,142 @@ function [map, how] = resolve_map(C, nr, nc, fi, ci)
         error('mv_compare:badType', 'ep_metrics entry is %s; expected numeric or cell.', class(C));
     end
 
-    if ~isempty(fi) && ~isempty(ci)
-        map = C{fi, ci};
-        how = sprintf('cell{%d,%d} %s (user-specified)', fi, ci, mat2str(size(map)));
+    if camera > size(C, 1) || slot > size(C, 2)
+        error('mv_compare:outOfRange', ...
+              'Requested {camera %d, slot %d} but the entry is %s.', ...
+              camera, slot, mat2str(size(C)));
+    end
+
+    map = C{camera, slot};
+    if isempty(map)
+        error('mv_compare:emptyCell', ...
+              ['ep_metrics{%d,%d} is empty — that metric was not extracted for camera %d. ' ...
+               'Check the camera number, or that the box was ticked when the metrics were made.'], ...
+              camera, slot, camera);
+    end
+    if ~isnumeric(map) || ~ismatrix(map) || ~isequal(size(map), [nr nc])
+        error('mv_compare:notAMap', ...
+              ['ep_metrics{%d,%d} is %s %s, not a %dx%d map. Slot 1 is the masked map ' ...
+               'and slot 6 the unmasked one; slot 2 is the background image.'], ...
+              camera, slot, class(map), mat2str(size(map)), nr, nc);
+    end
+    how = sprintf('cell{camera %d, slot %d} %s', camera, slot, mat2str(size(map)));
+end
+
+
+function kind = metric_kind(field)
+%METRIC_KIND  'duration' | 'window_time' — see the header of mv_compare.
+%
+%   A duration is a difference of two times, so any window origin cancels.  A
+%   window_time is measured in frames from the start of CADENCE's own analysis
+%   window and must be shifted into the recording's timeline before it can be
+%   compared with a reviewer's click.
+
+    switch field
+        case {'apd_data', 'ca_data', 'ca_apd_data', 'ap_rise_times', ...
+              'ca_rise_times', 'ca_tau', 'vc_delay', 'alternans_data', 'local_cv'}
+            kind = 'duration';
+        case {'act_times', 'rep_data', 'ca_rep_data'}
+            kind = 'window_time';
+        otherwise
+            kind = 'unknown';
+    end
+end
+
+
+function [soft, note] = align_origin(soft, field, manual_var, manifest, d)
+%ALIGN_ORIGIN  Shift a window-relative CADENCE time into absolute recording ms.
+%
+%   The manual value is an absolute time: mv_mark builds its axis as
+%   ((wf(1):wf(2)) - 1)/acqFreq*1000, so a click at absolute frame F is
+%   (F-1)*dt.  CADENCE stores compute_lat_50's 1-BASED fractional frame index
+%   inside its own window, times dt: (F - sf + 1)*dt for window start sf.  The
+%   uncorrected difference is therefore a constant (2 - sf) frames, which for a
+%   window starting at frame 1001 at 1 kHz is -999 ms on every pixel, with
+%   perfect-looking scatter.  Correct by adding (sf - 2)*dt.
+
+    note = '';
+    kind = metric_kind(field);
+
+    if strcmp(kind, 'duration')
+        if any(strcmp(manual_var, {'act_ms'}))
+            error('mv_compare:kindMismatch', ...
+                  ['''%s'' is a duration but ManualVar ''%s'' is an absolute time. ' ...
+                   'Comparing them is meaningless.'], field, manual_var);
+        end
         return;
     end
 
-    % Positional resolution: which elements are [nr nc] maps?
-    cand = [];
-    for a = 1:size(C, 1)
-        for b = 1:size(C, 2)
-            e = C{a, b};
-            if isnumeric(e) && ismatrix(e) && isequal(size(e), [nr nc])
-                cand(end+1, :) = [a b]; %#ok<AGROW>
-            end
-        end
+    if strcmp(kind, 'unknown')
+        warning('mv_compare:unknownKind', ...
+                ['''%s'' is not in the duration/time registry, so no origin check was ' ...
+                 'made. If it stores a TIME rather than a DURATION, the bias below is ' ...
+                 'the window offset, not a measurement error.'], field);
+        return;
     end
 
-    if isempty(cand)
-        error('mv_compare:noMap', ...
-              ['No element of the %s cell is a %dx%d map. Pass FileIndex/CamIndex ' ...
-               'explicitly, or check that the metrics file matches the conditioned file.'], ...
-              mat2str(size(C)), nr, nc);
+    % --- window_time: correction required ---
+    if isempty(manifest)
+        error('mv_compare:noManifest', ...
+              ['''%s'' is a window-relative time and needs the marking window to be ' ...
+               'shifted into absolute time, but the manifest could not be loaded.'], field);
     end
-    if size(cand, 1) > 1
-        warning('mv_compare:ambiguous', ...
-                ['%d elements of the cell are %dx%d maps; using {%d,%d}. Pass ' ...
-                 'FileIndex/CamIndex to disambiguate.'], ...
-                size(cand, 1), nr, nc, cand(1,1), cand(1,2));
+
+    src = 'raw';
+    if isfield(manifest, 'source') && ~isempty(manifest.source)
+        src = char(manifest.source);
     end
-    map = C{cand(1,1), cand(1,2)};
-    how = sprintf('cell{%d,%d} %s (auto-resolved by size)', cand(1,1), cand(1,2), mat2str(size(map)));
+    fs = double(manifest.acqFreq);
+    dt = 1000 / fs;
+
+    if strcmp(src, 'ensemble')
+        % Both sides are on the SAME averaged beat.  Feature extraction takes
+        % CAM<n>_average whenever the ensemble box is ticked, and the reviewers
+        % marked that same array, so the origin is frame 1 on both sides and
+        % nothing about the recording timeline enters.  The only residual is
+        % the index convention: CADENCE stores compute_lat_50's 1-BASED
+        % fractional frame index times dt, while mv_mark's axis is (frame-1)*dt.
+        sf = 1;
+        note = sprintf(['  origin: ensemble-averaged beat, shared frame-1 origin; ' ...
+                        'correcting the 1-based convention by %+.1f ms'], (sf - 2) * dt);
+    else
+        if ~isfield(d, 'window') || isempty(d.window) || ~iscell(d.window) || isempty(d.window{1,1})
+            error('mv_compare:noWindow', ...
+                  ['''%s'' is a window-relative time and the marks were made on a RAW single ' ...
+                   'beat, but the metrics file records no analysis window. Either re-extract ' ...
+                   'with a drawn window, or — better — mark the ensemble average instead ' ...
+                   '(mv_sample_pixels default), which shares its origin with feature ' ...
+                   'extraction and needs no correction.'], field);
+        end
+        sf = double(d.window{1,1}(1));
+        wf = manifest.window_frames;
+        if sf > wf(2) || double(d.window{1,1}(2)) < wf(1)
+            error('mv_compare:differentBeat', ...
+                  ['CADENCE analysed frames %d-%d but the reviewers marked frames %d-%d — ' ...
+                   'different beats, so a shared origin does not exist. Re-run ' ...
+                   'mv_sample_pixels with ''MetricsFile'' pointing at this metrics file.'], ...
+                  sf, double(d.window{1,1}(2)), wf(1), wf(2));
+        end
+        note = sprintf(['  origin: shifted CADENCE window-relative time by %+.1f ms ' ...
+                        '(window starts at frame %d)'], (sf - 2) * dt, sf);
+    end
+
+    soft = soft + (sf - 2) * dt;
+
+    % Sanity check the result rather than trusting the declared source.  The
+    % metrics file does NOT record whether feature extraction ran on the
+    % average or on a windowed raw beat (`ensemble || isempty(oap_window)`
+    % chooses at run time and nothing is saved), so this is the only available
+    % guard against the two sides having looked at different arrays.
+    span = manifest.window_ms;
+    frac_out = mean(soft < span(1) - 5*dt | soft > span(2) + 5*dt, 'omitnan');
+    if frac_out > 0.5
+        warning('mv_compare:originSuspect', ...
+                ['%.0f%% of corrected values fall outside the marked window (%.1f-%.1f ms). ' ...
+                 'Feature extraction was probably run on a different array than the reviewers ' ...
+                 'marked — check the ensemble checkbox state that produced this metrics file.'], ...
+                100 * frac_out, span(1), span(2));
+    end
 end
 
 
@@ -245,6 +429,7 @@ function io = interobserver(T, var, tol)
 %INTEROBSERVER  Pairwise differences between reviewers on the same pixel.
 
     io = struct('n_pairs', 0, 'sd', NaN, 'bias', NaN, 'within', nan(size(tol)));
+    T = T(isfinite(T.(var)), :);
     revs = unique(T.reviewer);
     if numel(revs) < 2; return; end
 
