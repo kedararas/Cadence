@@ -18,7 +18,13 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
 %                   Required for restitution slope and diastolic Ca maps.
 %     'APD_level'   Which APD level to use as primary metric (default: 80).
 %     'MinAlt'      Minimum APD alternans fraction to flag a pixel as
-%                   significant (default: 0.05 = 5% of mean APD).
+%                   significant (default: 0.15 = 15% of mean APD).
+%                   NB this header used to say 0.05 while the code used 0.15.
+%                   The code's 0.15 is kept, because lowering the threshold
+%                   would silently reclassify pixels in every existing result;
+%                   if 5% was the intent, change it deliberately and re-run.
+%                   Drives sig_mask, concordance_ratio, is_discordant and
+%                   risk_global.
 %
 %   Output struct fields
 %
@@ -200,12 +206,40 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
 
     apd_disp_global = std(apd_mean_map(valid), 'omitnan');
 
-    % Gradient of mean APD map
+    % Gradient of mean APD map.
+    %
+    % The background must NOT simply be zeroed before the Sobel: a tissue pixel
+    % next to background would then see a step from ~100 ms to 0, and masking
+    % only the outside afterwards leaves that artefact on the inner border ring.
+    % Measured on a synthetic map with a true 0.32 ms/pixel gradient, the old
+    % version reported max_gradient = 467 ms/pixel against a true interior value
+    % of 0.64 — a 730x inflation, and it inflated the 95th percentile that
+    % normalises the risk component too.
+    %
+    % Two changes: fill the background by nearest-neighbour from the tissue so
+    % there is no step to differentiate across, and evaluate the gradient only
+    % on pixels whose whole 3x3 Sobel footprint lies inside the mask.
+    % `known` is where an APD actually exists — which is not the same as
+    % `valid`, because a pixel inside the mask can still have failed.  Both the
+    % outside AND interior holes have to be filled, or a hole reintroduces the
+    % same step the background fill was there to remove.
     apd_clean = apd_mean_map;
-    apd_clean(~valid) = 0;                     % zero invalid for gradient calc
+    known     = isfinite(apd_clean) & valid;
+    if any(known(:)) && ~all(known(:))
+        [~, nearest]      = bwdist(known);
+        apd_clean(~known) = apd_clean(nearest(~known));
+    elseif ~any(known(:))
+        apd_clean(:) = 0;
+    end
+
     [gradient_mag, gradient_dir] = imgradient(apd_clean, 'sobel');
-    gradient_mag(~valid) = nan;                % restore invalid mask
-    gradient_dir(~valid) = nan;
+
+    % Report the gradient only where the whole 3x3 Sobel footprint sits on
+    % measured pixels.  The border ring carries the discontinuity at the edge
+    % of the measured region, never a real repolarisation gradient.
+    grad_valid = known & imerode(known, ones(3));
+    gradient_mag(~grad_valid) = nan;
+    gradient_dir(~grad_valid) = nan;
     max_gradient = max(gradient_mag(:), [], 'omitnan');
 
 
@@ -424,15 +458,20 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
     %   Alternans fraction    1.0     Primary substrate for dispersion
     %   APD gradient          1.0     Steepness of repolarisation border
     %   Discordant / nodal    1.0     Directly predicts block site
-    %   Restitution slope>1   1.0     Dynamic instability predictor
     %   Ca-AP out-of-phase    0.5     Mechanistic amplifier of risk
     %   High diastolic Ca     0.5     Independent triggered-activity risk
     %
-    %   Maximum possible score: 5.0  (or 4.0 without Ca data)
+    %   Maximum possible score: 4.0  (or 3.0 without Ca data)
     %   risk_map normalised to [0, 1] by dividing by maximum.
+    %
+    %   Restitution slope was REMOVED from this composite on 2026-09-01: under
+    %   fixed-cycle-length pacing it is 1 by algebra rather than by physiology,
+    %   so scoring it scored rounding noise.  See the note at component 3.
+    %   Risk scores from before that date are not comparable to those after it:
+    %   the denominator changed from 5.0/4.0 to 4.0/3.0 and a quarter of the
+    %   numerator was noise.
 
-    max_score = 4.0;   % without Ca data
-    risk_map  = zeros(R, C);
+    max_score = 3.0;   % without Ca data
 
     % Component 1: alternans ratio  (saturates at 20%)
     % Use the already-computed alt_ratio_map (avoids recomputing the division)
@@ -447,10 +486,19 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
     % Component 3: nodal lines (binary — highest risk pixels)
     c3 = double(nodal_lines);
 
-    % Component 4: restitution slope > 1 (binary)
-    c4 = double(slope_gt1_mask);
+    % NO restitution component.  slope_gt1_mask is DELIBERATELY NOT SCORED.
+    % The callers build beat frames with 'FixedLength', so activation advances
+    % by a constant cycle length and DI(j) = CL - APD(j).  Under 2:1 alternans
+    % APD(j+1) = DI(j) + (2A - CL), which makes cov(DI,APD_next)/var(DI)
+    % identically 1 — an algebraic consequence of fixed-rate pacing, not a
+    % property of the tissue.  Simulated at 2/5/10 ms alternans the slope is
+    % 1.000000 in every case.  Scoring `restitution_map > 1` therefore scored
+    % which side of 1 the rounding noise fell on, and it carried a full 1.0 of
+    % a 4.0 maximum — a quarter of the composite.  A real restitution slope
+    % needs an S1-S2 protocol; until there is one, this must not be scored.
+    % restitution_map and slope_gt1_mask are still returned for inspection.
 
-    risk_map = c1 + c2 + c3 + c4;
+    risk_map = c1 + c2 + c3;
 
     % Component 5: Ca-AP out-of-phase (adds 0.5 weight)
     c5 = zeros(R, C);
@@ -517,11 +565,13 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
     % ── Composite risk ───────────────────────────────────────────────────
     substrate.risk_map           = risk_map;
     substrate.risk_global        = risk_global;
+    % No 'restitution_slope' component: it is no longer scored (see the note
+    % at the composite).  restitution_map and slope_gt1_mask are still
+    % returned above for inspection, just not folded into the risk number.
     substrate.risk_components    = struct( ...
         'alternans_fraction', c1, ...
         'apd_gradient',       c2, ...
         'nodal_proximity',    c3, ...
-        'restitution_slope',  c4, ...
         'ca_outofphase',      c5, ...
         'diastolic_ca',       c6);
 

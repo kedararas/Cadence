@@ -345,11 +345,28 @@ function alternans = caAlternans3D(time, cData3D, opts)
         t_idx    = reshape(1:T_win, 1, 1, T_win);
         after_pk = t_idx > reshape(pk, R, C, 1);        % R x C x T_win gate
 
+        % The bracketing frame comes from the cumsum crossing, then the crossing
+        % is INTERPOLATED between the two samples that bracket it — the same
+        % thing the 1-D path has always done via findCrossMs.  Leaving it whole-
+        % frame quantised D50/D80 and made a single-pixel readout disagree with
+        % the map by 1-2 frames.  The peak stays an integer argmax, matching the
+        % 1-D path's findpeaks; refining the apex is a separate change and would
+        % move the peak-referenced convention.
         for lv = 1:nLev
             thresh        = 1 - decayLevels(lv) / 100;  % e.g. 0.50 for D50, 0.20 for D80
             below         = wn <= thresh;
             [hit, rf]     = max(cumsum(below & after_pk, 3) == 1, [], 3);
-            catd          = (double(rf) - double(pk)) * dt;  % ms from peak to crossing
+
+            [rg, cg]  = ndgrid(1:R, 1:C);
+            prevf     = max(rf - 1, 1);
+            v_hi      = wn(sub2ind([R C T_win], rg, cg, rf));      % at or below thresh
+            v_lo      = wn(sub2ind([R C T_win], rg, cg, prevf));   % above thresh
+            den       = v_lo - v_hi;
+            rep_sub   = double(rf);
+            okc       = logical(hit) & (rf > 1) & (den > 0);
+            rep_sub(okc) = (double(rf(okc)) - 1) + (v_lo(okc) - thresh) ./ den(okc);
+
+            catd          = (rep_sub - double(pk)) * dt;    % ms from peak to crossing
             invalid       = ~logical(hit) | catd <= 0 | isnan(TTP_beat{j});
             catd(invalid) = nan;
             CaTD_beat{j, lv} = catd;
