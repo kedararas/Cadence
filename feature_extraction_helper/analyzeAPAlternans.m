@@ -38,7 +38,11 @@ function [alternans] = analyzeAPAlternans(time, voltage, varargin)
 %     .tri_alt_map   Triangulation alternans map (APD90 - APD30, ms)
 %     .pval_map      Pixel-wise paired t-test p-value (APD80)
 %     .tstat_map     Pixel-wise t-statistic
-%     .spectral_map  Pixel-wise spectral alternans index (power at 0.5 cyc/beat)
+%     .spectral_map  Pixel-wise spectral alternans index (power at 0.5 cyc/beat),
+%                    NaN outside the valid mask
+%     .spectral_k_map   Dimensionless alternans-vs-noise-floor score; use this
+%                       to compare recordings or the Vm and Ca channels
+%     .spectral_ok_map  Logical mask of pixels that contributed
 %     .APD_beat      {num_beats × num_levels} cell of per-beat APD maps (ms)
 %     .Vamp_beat     {num_beats × 1}  cell of per-beat raw amplitude maps
 
@@ -332,33 +336,54 @@ function alternans = apAlternans3D(time, voltage3D, opts)
     act_beat      = cell(nBeats, 1);     % activation time from window start (ms)
     diastolic_beat = cell(nBeats, 1);    % pre-AP diastolic Vm level per beat [R x C]
 
+    % Pre-pass: per-pixel peak frame of every beat window.  The repolarisation
+    % search of beat j may run past the next stimulus, up to (not including)
+    % the next beat's peak at that pixel -- as the 1-D path and the app's
+    % extract_apd (ensemble window ~1.1x the cycle length) already do.  Fixed-
+    % length windows ending at the next stimulus otherwise truncate every
+    % crossing that lands in the next beat's diastole and NaN the deeper
+    % levels (APD80/90) wherever repolarisation outlasts the cycle length.
+    pk_all = cell(nBeats, 1);
+    for j = 1:nBeats
+        [~, pk_all{j}] = max(voltage3D(:,:, bf(j,1):bf(j,2)), [], 3);
+    end
+
+    [rg, cg] = ndgrid(1:R, 1:C);
+
     for j = 1:nBeats
         sf    = bf(j, 1);
         ef    = bf(j, 2);
         T_win = ef - sf + 1;
 
-        raw = double(voltage3D(:,:, sf:ef));   % R x C x T_win
+        % Extended window = this beat + the next; the crossing search is
+        % bounded per pixel by the next beat's peak.  Last beat: this window.
+        if j < nBeats
+            efx     = bf(j+1, 2);
+            next_pk = double(bf(j+1, 1) - sf) + double(pk_all{j+1});   % local frame of next peak
+        else
+            efx     = ef;
+            next_pk = (T_win + 1) * ones(R, C);
+        end
+        rawx  = double(voltage3D(:,:, sf:efx));   % R x C x T_x
+        T_x   = efx - sf + 1;
+        raw   = rawx(:,:, 1:T_win);               % this beat's own window
+        t_win = reshape(1:T_win, 1, 1, T_win);
+        t_idx = reshape(1:T_x,   1, 1, T_x);
 
-        % Per-pixel [0,1] normalisation
+        % Per-pixel [0,1] normalisation on this beat's window: amplitude =
+        % peak - window minimum, the convention of earlier releases (kept so
+        % the amplitude and APD alternans maps are unchanged by the 2026-09
+        % diastolic fix, which only touches diastolic_beat below).
         lo  = min(raw, [], 3);
-        hi  = max(raw, [], 3);
-        rng = max(hi - lo, eps('single'));
-        wn  = (raw - lo) ./ rng;              % R x C x T_win
+        [hi, pk] = max(raw, [], 3);                              % R x C
+        rng = max(hi - lo, eps);
+        wn  = (rawx - lo) ./ rng;             % R x C x T_x (may leave [0,1] in the extension)
 
-        % Store raw amplitude for amplitude-alternans map
+        % Amplitude for the amplitude-alternans map
         Vamp_beat{j} = (hi - lo) .* nan_mask;
 
-        % Diastolic Vm: minimum of the beat window (pre-AP resting level)
-        % This is the AP analogue of diastolic SR Ca2+ load (Wang et al. 2014)
-        diastolic_beat{j} = lo .* nan_mask;
-
-        % Peak location (for "after peak" gate and to bound the upstroke search)
-        [~, pk] = max(wn, [], 3);                                % R x C
-        t_idx   = reshape(1:T_win, 1, 1, T_win);
-        after_pk = t_idx > reshape(pk, R, C, 1);                % R x C x T_win
-
         % Activation: sub-frame 50%-upstroke crossing with amplitude/slope
-        % validity gating (compute_lat_50) — the same LAT definition as the
+        % validity gating (compute_lat_50) -- the same LAT definition as the
         % app's activation/APD maps, so per-beat APDs and alternans magnitudes
         % are directly comparable to the exported maps. Pixels with no real
         % upstroke come back NaN instead of a forced max-dV/dt frame. Fed the
@@ -367,39 +392,50 @@ function alternans = apAlternans3D(time, voltage3D, opts)
         lat50        = compute_lat_50(raw);                      % fractional frame, NaN = no upstroke
         act_beat{j}  = lat50 * dt .* nan_mask;                   % ms, NaN outside mask/invalid
 
+        % Diastolic Vm of THIS beat: median of the frames before activation,
+        % the convention of the app's extract_apd, censored when fewer than 3
+        % frames precede the upstroke.  The whole-window minimum used before
+        % mixed this beat's take-off with the next beat's, so the beat-to-beat
+        % diastolic difference (AP_load_alt_map) collapsed to the lower of the
+        % two and read ~0 whenever the diastolic level alternated; a minimum
+        % is also biased low by noise.  AP analogue of diastolic SR Ca2+ load
+        % (Wang et al. 2014).
+        pre = raw;
+        pre(t_win >= reshape(floor(lat50), R, C, 1)) = NaN;      % keep frames before activation
+        n_pre = sum(~isnan(pre), 3);
+        dia   = median(pre, 3, 'omitnan');
+        dia(n_pre < 3 | isnan(lat50)) = NaN;
+        diastolic_beat{j} = dia .* nan_mask;
+
         % Pre-peak max temporal derivative (for the dV/dt-alternans map only).
         % The upstroke must PRECEDE the peak, so the derivative is masked at
         % and after the peak before taking the max; otherwise a late artifact
         % in a noisy pixel can win.
-        dv           = diff(wn, 1, 3);                           % R x C x (T_win-1)
+        dv           = diff(wn(:,:, 1:T_win), 1, 3);              % R x C x (T_win-1)
         td_dv        = reshape(1:(T_win-1), 1, 1, T_win-1);
         dv_pre       = dv;
         dv_pre(td_dv >= reshape(pk, R, C, 1)) = -Inf;            % keep only up to the peak
         dvMax        = max(dv_pre, [], 3);                       % R x C
+        dvMax(~isfinite(dvMax)) = NaN;                           % peak on frame 1: no pre-peak slope
         dVdt_beat{j} = dvMax / dt .* nan_mask;                  % norm.units/ms
 
         % APD at each repolarisation level.
         %
         % The bracketing frame comes from the cumsum crossing, then the
         % crossing itself is INTERPOLATED between the two samples that bracket
-        % it, matching findCrossMs / compute_lat_50 and extract_apd.  Taking rf
-        % whole-frame while anchoring on a sub-frame lat50 was inconsistent and
-        % quantised the APD: for alternans, which is a difference of two APDs,
-        % the bias cancels but the per-pixel scatter does not — measured at
-        % 0.62 ms SD against 0.25 ms interpolated, i.e. most of a 1 ms
-        % alternans signal.  It also made this 3-D path disagree with the 1-D
-        % path, which has always interpolated.
+        % it, matching findCrossMs / compute_lat_50 and extract_apd.  The gate
+        % admits frames after THIS peak and before the NEXT beat's peak.
+        gate = (t_idx > reshape(pk, R, C, 1)) & (t_idx < reshape(next_pk, R, C, 1));
         for lv = 1:nLev
             thresh        = 1 - APD_levels(lv) / 100;           % e.g. 0.20 for APD80
             below         = wn <= thresh;
-            [hit, rf]     = max(cumsum(below & after_pk, 3) == 1, [], 3);
+            [hit, rf]     = max(cumsum(below & gate, 3) == 1, [], 3);
 
             % Sub-frame crossing: wn falls from above thresh at rf-1 to at or
             % below it at rf, so the crossing lies in between.
-            [rg, cg]  = ndgrid(1:R, 1:C);
             prevf     = max(rf - 1, 1);
-            v_hi      = wn(sub2ind([R C T_win], rg, cg, rf));      % at or below thresh
-            v_lo      = wn(sub2ind([R C T_win], rg, cg, prevf));   % above thresh
+            v_hi      = wn(sub2ind([R C T_x], rg, cg, rf));        % at or below thresh
+            v_lo      = wn(sub2ind([R C T_x], rg, cg, prevf));     % above thresh
             den       = v_lo - v_hi;
             rep_sub   = double(rf);
             okc       = logical(hit) & (rf > 1) & (den > 0);
@@ -536,11 +572,13 @@ function alternans = apAlternans3D(time, voltage3D, opts)
         d       = odd_80 - even_80;                                   % R x C x n_pairs
         d_mean  = mean(d, 3, 'omitnan');
         d_std   = std(d,  0, 3, 'omitnan');
-        tstat   = d_mean ./ (d_std / sqrt(n_pairs));
+        n_ok    = sum(isfinite(d), 3);             % pairs actually present per pixel
+        tstat   = d_mean ./ (d_std ./ sqrt(n_ok));
+        tstat(n_ok < 3) = NaN;
         tstat_map = tstat;
         try
             % Two-tailed p-value from t-distribution (Statistics Toolbox)
-            pval_map = 2 * (1 - tcdf(abs(tstat), n_pairs - 1));
+            pval_map = 2 * (1 - tcdf(abs(tstat), max(n_ok - 1, 1)));
         catch
             % Approximate via normal distribution if tcdf unavailable
             pval_map = 2 * (1 - normcdf(abs(tstat)));
@@ -548,19 +586,17 @@ function alternans = apAlternans3D(time, voltage3D, opts)
     end
 
     % ── Spectral alternans index map (FFT along beat dimension) ───────────
-    % Power at 0.5 cycles/beat flags a true beat-alternating pattern.
-    spectral_map = nan(R, C);
+    % Power at 0.5 cycles/beat flags a true beat-alternating pattern.  The
+    % masking, valid-beat mean, even-beat truncation and the dimensionless
+    % k-score live in spectralAlternansMap, shared with the calcium analyser.
+    % The previous in-line version wrote finite zeros into the background and
+    % so reported an exact zero median on ~37% of recordings -- see that file.
+    spectral_map    = nan(R, C);
+    spectral_k_map  = nan(R, C);
+    spectral_ok_map = false(R, C);
     if nBeats >= 4
-        all_apd = cat(3, APD_beat{:, apd80_col});           % R x C x nBeats
-        all_apd(isnan(all_apd)) = 0;                        % replace NaN → 0
-        all_apd = all_apd - mean(all_apd, 3);               % detrend (zero-mean)
-        Y        = fft(all_apd, [], 3);
-        P        = abs(Y / nBeats).^2;
-        % Index of 0.5 cycles/beat = beat index N/2+1 (for even N)
-        alt_bin  = floor(nBeats/2) + 1;
-        if alt_bin <= size(P, 3)
-            spectral_map = P(:,:, alt_bin);
-        end
+        [spectral_map, spectral_k_map, spectral_ok_map] = ...
+            spectralAlternansMap(cat(3, APD_beat{:, apd80_col}));
     end
 
     % ── Alternans ratio maps ───────────────────────────────────────────────
@@ -603,12 +639,17 @@ function alternans = apAlternans3D(time, voltage3D, opts)
     phase_angle_map = nan(R, C);
     if nBeats >= 4
         all_apd80 = cat(3, APD_beat{:, apd80_col});  % R x C x nBeats
+        % Same masking defect as the spectral map had: NaN->0 followed by a
+        % whole-map assignment makes angle(0+0i)=0 a finite value at every
+        % background pixel.  Keep the all-beats-finite mask and restore NaN.
+        ok_phase  = all(isfinite(all_apd80), 3);
         all_apd80(isnan(all_apd80)) = 0;
         all_apd80 = all_apd80 - mean(all_apd80, 3);  % zero-mean detrend
         Y80      = fft(all_apd80, [], 3);
         alt_bin  = floor(nBeats/2) + 1;
         if alt_bin <= size(Y80, 3)
             phase_angle_map = angle(Y80(:,:, alt_bin));  % [-pi, pi]
+            phase_angle_map(~ok_phase) = NaN;
         end
     end
 
@@ -633,6 +674,8 @@ function alternans = apAlternans3D(time, voltage3D, opts)
     alternans.pval_map      = pval_map;
     alternans.tstat_map     = tstat_map;
     alternans.spectral_map  = spectral_map;
+    alternans.spectral_k_map  = spectral_k_map;    % dimensionless, comparable
+    alternans.spectral_ok_map = spectral_ok_map;   % pixels that contributed
 
     % Alternans ratio maps  (|ALT| / mean_metric per pixel)
     alternans.amp_ratio_map  = amp_ratio_map;
@@ -651,7 +694,9 @@ function alternans = apAlternans3D(time, voltage3D, opts)
     alternans.AP_load_alt_map    = AP_load_alt_map;     % D/L   per pixel, >= 0
     alternans.AP_L_vamp_map      = L_vamp_map;          % mean large-beat Vamp map
     alternans.AP_S_vamp_map      = S_vamp_map;          % mean small-beat Vamp map
-    alternans.AP_amp_phase_map   = 2*double(odd_larger_ap) - 1;  % +1 odd=L, -1 even=L
+    ap_amp_phase = 2*double(odd_larger_ap) - 1;               % +1 odd=L, -1 even=L
+    ap_amp_phase(isnan(L_vamp_map)) = 0;                      % 0 = no data, as phase_map
+    alternans.AP_amp_phase_map   = ap_amp_phase;
     %   AP_amp_phase_map: Vamp-based phase, comparable to phase_map (APD-based)
     %   from assess_arrhythmia_substrate.  Agreement confirms Ca-driven mechanism;
     %   divergence (Vamp phase ≠ APD phase) points to voltage-driven alternans.

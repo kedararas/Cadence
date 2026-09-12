@@ -18,7 +18,11 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
 %     BeatFrames - [num_beats × 2] [start_frame, end_frame] per beat (REQUIRED)
 %
 %   Optional Name-Value Pairs (both modes)
-%     'BaselineWindow' - Duration (ms) for sliding-minimum baseline (default: 50)
+%     'BaselineWindow' - Duration (ms) of the sliding minimum used for PEAK
+%                        DETECTION in 1-D mode only (default: 50). Amplitude,
+%                        diastolic level and decay are measured on the raw
+%                        signal referenced to each beat's own pre-release
+%                        trough. 3-D mode ignores this option.
 %     'PlotResults'    - true/false (default: true for 1-D, false for 3-D)
 %
 %   Optional Name-Value Pairs (1-D mode only)
@@ -39,7 +43,10 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
 %     .TTP_alt_map    Time-to-peak alternans map (ms)
 %     .pval_map       Pixel-wise paired t-test p-value (amplitude)
 %     .tstat_map      Pixel-wise t-statistic
-%     .spectral_map   Pixel-wise spectral alternans index (power at 0.5 cyc/beat)
+%     .spectral_map   Pixel-wise spectral alternans index (power at 0.5 cyc/beat),
+%                     NaN outside the valid mask
+%     .spectral_k_map    Dimensionless alternans-vs-noise-floor score
+%     .spectral_ok_map   Logical mask of pixels that contributed
 %     .amp_beat       {num_beats × 1} cell of per-beat amplitude maps
 %     .CaTD_beat      {num_beats × num_levels} cell of per-beat CaTD maps (ms)
 %     .TTP_beat       {num_beats × 1} cell of per-beat TTP maps (ms)
@@ -84,10 +91,16 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
 
     fprintf('\n======== Ca2+ Transient Alternans Analysis ========\n');
 
-    %% ---- Step 1: Baseline correction ----
+    %% ---- Step 1: Baseline correction (peak DETECTION only) ----
+    % The sliding-minimum flattened trace is used only to find peaks robustly
+    % under drift.  Every measured quantity (amplitude, diastolic level, decay)
+    % is taken from the RAW trace referenced to the beat's own pre-release
+    % trough: a sliding minimum shorter than the transient follows the decay
+    % (halving CaTD) and zeroes every trough (erasing diastolic alternans).
+    cRaw            = double(cSignal);
     baselineSamples = round(opts.BaselineWindow / dt);
-    baseline        = movmin(cSignal, baselineSamples);
-    cNorm           = cSignal - baseline;
+    baseline        = movmin(cRaw, baselineSamples);
+    cNorm           = cRaw - baseline;
     cNorm           = cNorm / max(cNorm);
 
     %% ---- Step 2: Detect peaks ----
@@ -115,7 +128,7 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
     onsetLocs = zeros(nBeats, 1);
     for b = 1:nBeats
         searchStart = max(1, peakLocs(b) - minPeakDist);
-        searchSeg   = cNorm(searchStart:peakLocs(b));
+        searchSeg   = cRaw(searchStart:peakLocs(b));    % trough on the RAW trace
         [~, relMin] = min(searchSeg);
         onsetLocs(b) = searchStart + relMin - 1;
     end
@@ -129,9 +142,10 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
     diastolicLevel = zeros(nBeats, 1);   % pre-release baseline per beat
 
     for b = 1:nBeats
-        baseVal        = cNorm(onsetLocs(b));
+        baseVal        = cRaw(onsetLocs(b));          % pre-release trough (raw units)
+        peakVal        = cRaw(peakLocs(b));
         diastolicLevel(b) = baseVal;     % diastolic [Ca2+] before each transient
-        amplitude(b)   = peakAmps(b) - baseVal;
+        amplitude(b)   = peakVal - baseVal;
         TTP(b)       = (peakLocs(b) - onsetLocs(b)) * dt;
 
         if b < nBeats
@@ -139,11 +153,11 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
         else
             decayEnd = min(peakLocs(b) + round(500/dt), length(cNorm));
         end
-        decaySeg  = cNorm(peakLocs(b):decayEnd);
+        decaySeg  = cRaw(peakLocs(b):decayEnd);
         decayTime = (0:length(decaySeg)-1)' * dt;
 
-        thresh50 = peakAmps(b) - 0.50 * amplitude(b);
-        thresh80 = peakAmps(b) - 0.80 * amplitude(b);
+        thresh50 = peakVal - 0.50 * amplitude(b);
+        thresh80 = peakVal - 0.80 * amplitude(b);
         % findCrossMs interpolates the crossing (shared definition with the
         % app's decay metrics) and returns NaN when the transient never
         % decays to the level within the window. It expects dt in seconds.
@@ -151,8 +165,11 @@ function [alternans] = analyzeCaTransientAlternans(time, cSignal, varargin)
         D80(b)   = findCrossMs(decaySeg, thresh80, dt/1000);
 
         try
-            fitObj  = fit(decayTime, decaySeg, 'a*exp(-x/b)+c', ...
-                          'StartPoint', [amplitude(b), 100, baseVal], ...
+            % Fit on the [0,1]-normalised decay so the bounds are unit-free;
+            % the time constant b is unchanged by the scaling.
+            decayN  = (decaySeg - baseVal) / (amplitude(b) + eps);
+            fitObj  = fit(decayTime, decayN, 'a*exp(-x/b)+c', ...
+                          'StartPoint', [1, 100, 0], ...
                           'Lower', [0, 1, -0.5], 'Upper', [2, 2000, 0.5]);
             tau(b)  = fitObj.b;
         catch
@@ -260,14 +277,13 @@ end
 function alternans = caAlternans3D(time, cData3D, opts)
 % CAALTERNANS3D  Vectorized Ca2+ transient alternans across [R x C x T].
 %
-%   Pipeline per beat window
-%     1. Sliding-minimum baseline correction (movmin, 3-D native)
-%     2. Per-pixel [0,1] normalisation
-%     3. Peak location via max along time
-%     4. Onset: minimum in the first half of the beat window
-%     5. Amplitude = peak - onset value (on baseline-corrected signal)
-%     6. TTP = (peak_frame - onset_frame) * dt
-%     7. CaTD at each decay level via vectorised cumsum crossing
+%   Pipeline per beat window (raw signal, no sliding-minimum flattening)
+%     1. Peak = max along time (SR mode: signal negated first)
+%     2. Trough = min BEFORE the peak = this beat's pre-release diastolic level
+%     3. Amplitude = peak - trough; per-pixel [0,1] normalisation on that span
+%     4. TTP = (peak_frame - trough_frame) * dt
+%     5. CaTD at each decay level via vectorised cumsum crossing, interpolated,
+%        searched up to the next beat's peak (not cut at the next stimulus)
 %
 %   Alternans magnitude = mean(odd - even) over all beat pairs.
 %   Statistics: vectorised paired t-test on amplitude (requires ≥ 3 pairs).
@@ -279,7 +295,6 @@ function alternans = caAlternans3D(time, cData3D, opts)
     nBeats      = size(bf, 1);
     decayLevels = opts.DecayLevels(:)';     % row vector, e.g. [50 80]
     nLev        = numel(decayLevels);
-    blWin       = max(3, round(opts.BaselineWindow / dt));
 
     % ── Mask ───────────────────────────────────────────────────────────────
     if ~isempty(opts.Mask)
@@ -290,77 +305,98 @@ function alternans = caAlternans3D(time, cData3D, opts)
         nan_mask = ones(R, C);
     end
 
-    % ── Global baseline correction (movmin along time, 3-D native) ─────────
-    % movmin(A, k, 3) slides a k-frame minimum window along dim 3 of the
-    % entire [R x C x T] array in one call — no pixel loop needed.
-    % Kept in single for single/integer input (movmin supports single):
-    % promoting the full R x C x T volume to double would hold ~3 double
-    % volumes at peak. Only the small R x C output maps are cast to double.
-    if isa(cData3D, 'double')
-        cWork = cData3D;
-    else
-        cWork = single(cData3D);
-    end
-    cCorr = cWork - movmin(cWork, blWin, 3);       % baseline-subtracted
-
     % ── Per-beat storage ───────────────────────────────────────────────────
-    amp_beat      = cell(nBeats, 1);       % amplitude (baseline-subtracted, norm.)
-    TTP_beat      = cell(nBeats, 1);       % time to peak (ms)
-    CaTD_beat     = cell(nBeats, nLev);    % CaTD at each decay level (ms)
-    diastolic_beat = cell(nBeats, 1);      % diastolic level per beat (pre-release baseline)
+    amp_beat       = cell(nBeats, 1);      % amplitude = peak - preceding trough (raw units)
+    TTP_beat       = cell(nBeats, 1);      % time to peak (ms)
+    CaTD_beat      = cell(nBeats, nLev);   % CaTD at each decay level (ms)
+    diastolic_beat = cell(nBeats, 1);      % pre-release diastolic level per beat (raw units)
+
+    % Every quantity is referenced to the beat's OWN pre-release trough on the
+    % raw signal.  The sliding-minimum flattening (movmin over BaselineWindow)
+    % that used to precede this loop is gone from the 3-D path: a window
+    % shorter than the transient tracks the decay (CaTD50 came out at about
+    % half its true value), zeroes every trough (load alternans D/L was 0 by
+    % construction, hiding real diastolic alternans), and sits on the upstroke
+    % foot when trough-to-peak exceeds half the window (clipping the amplitude
+    % of slow transients).
+    %
+    % SR Ca2+ (Fluo-5N) falls on release: negate so the same peak/trough logic
+    % applies, then store the diastolic level back in original units.
+    sgn = 1;
+    if strcmpi(opts.SignalType, 'SR'), sgn = -1; end
+
+    % Pre-pass: per-pixel peak frame of every beat window.  The decay search
+    % of beat j may run past the next stimulus, up to (not including) the next
+    % beat's peak at that pixel -- as the 1-D path does (decayEnd = next
+    % onset).  Fixed-length windows ending at the next stimulus otherwise
+    % truncate every crossing that lands in the next beat's diastole, which at
+    % fast pacing is most of the deeper level (CaTD80).
+    pk_all = cell(nBeats, 1);
+    for j = 1:nBeats
+        [~, pk_all{j}] = max(sgn * double(cData3D(:,:, bf(j,1):bf(j,2))), [], 3);
+    end
+
+    [rg, cg] = ndgrid(1:R, 1:C);
 
     for j = 1:nBeats
         sf    = bf(j, 1);
         ef    = bf(j, 2);
         T_win = ef - sf + 1;
 
-        win = cCorr(:,:, sf:ef);           % R x C x T_win, baseline-subtracted
+        % Extended window = this beat + the next; the crossing search is
+        % bounded per pixel by the next beat's peak.  Last beat: this window.
+        if j < nBeats
+            efx     = bf(j+1, 2);
+            next_pk = double(bf(j+1, 1) - sf) + double(pk_all{j+1});   % local frame of next peak
+        else
+            efx     = ef;
+            next_pk = (T_win + 1) * ones(R, C);
+        end
+        winx  = sgn * double(cData3D(:,:, sf:efx));   % R x C x T_x
+        T_x   = efx - sf + 1;
+        win   = winx(:,:, 1:T_win);                   % this beat's own window
+        t_win = reshape(1:T_win, 1, 1, T_win);
+        t_idx = reshape(1:T_x,   1, 1, T_x);
 
-        % Per-pixel [0,1] normalisation
-        lo  = min(win, [], 3);
-        hi  = max(win, [], 3);
-        rng = max(hi - lo, eps('single'));
-        wn  = (win - lo) ./ rng;           % R x C x T_win, each pixel in [0,1]
+        % Peak
+        [hi, pk] = max(win, [], 3);                                 % R x C
 
-        % Amplitude (raw, before normalisation — in baseline-subtracted units)
-        amp_beat{j} = double(hi - lo) .* nan_mask;
+        % Preceding trough: minimum of the window BEFORE the peak
+        pre = win;
+        pre(t_win > reshape(pk, R, C, 1)) = Inf;
+        [lo, onset_f] = min(pre, [], 3);                             % R x C
 
-        % Diastolic level: the pre-release baseline (lo in the beat window,
-        % i.e. the minimum of the baseline-corrected signal = onset level).
-        % For SR Ca2+ (Fluo-5N, signal falls on release), use hi instead;
-        % the SignalType field is checked below after the loop.
-        diastolic_beat{j} = double(lo) .* nan_mask;
+        % Fewer than two frames before the peak: no usable pre-release baseline
+        no_base = pk <= 2;
 
-        % Onset: minimum in the first half of the window (per pixel)
-        T_half = max(1, floor(T_win / 2));
-        [~, onset_f] = min(wn(:,:, 1:T_half), [], 3);   % R x C, frame in [1,T_half]
+        amp = hi - lo;
+        amp(no_base) = NaN;
+        rng = max(amp, eps);
+        wn  = (winx - lo) ./ rng;     % trough -> 0, peak -> 1; may dip below 0 after the peak
 
-        % Peak: maximum across full window
-        [~, pk] = max(wn, [], 3);                        % R x C
+        amp_beat{j}       = amp .* nan_mask;
+        diastolic_beat{j} = (sgn * lo) .* nan_mask;                  % original units
 
-        % TTP (ms): from onset to peak
-        TTP_beat{j} = max(double(pk) - double(onset_f), 0) * dt .* nan_mask;
+        % TTP (ms): from trough to peak
+        ttp = double(pk) - double(onset_f);
+        ttp(no_base) = NaN;
+        TTP_beat{j} = ttp * dt .* nan_mask;
 
-        % CaTD: first frame AFTER peak where signal <= (1 - decay_pct/100)
-        t_idx    = reshape(1:T_win, 1, 1, T_win);
-        after_pk = t_idx > reshape(pk, R, C, 1);        % R x C x T_win gate
+        % CaTD: first frame AFTER this peak (and before the next beat's peak)
+        % where the signal <= (1 - decay_pct/100), with the crossing
+        % INTERPOLATED between the two bracketing samples (same definition as
+        % the 1-D path's findCrossMs).  The peak stays an integer argmax,
+        % matching the 1-D path's findpeaks.
+        gate = (t_idx > reshape(pk, R, C, 1)) & (t_idx < reshape(next_pk, R, C, 1));
 
-        % The bracketing frame comes from the cumsum crossing, then the crossing
-        % is INTERPOLATED between the two samples that bracket it — the same
-        % thing the 1-D path has always done via findCrossMs.  Leaving it whole-
-        % frame quantised D50/D80 and made a single-pixel readout disagree with
-        % the map by 1-2 frames.  The peak stays an integer argmax, matching the
-        % 1-D path's findpeaks; refining the apex is a separate change and would
-        % move the peak-referenced convention.
         for lv = 1:nLev
             thresh        = 1 - decayLevels(lv) / 100;  % e.g. 0.50 for D50, 0.20 for D80
             below         = wn <= thresh;
-            [hit, rf]     = max(cumsum(below & after_pk, 3) == 1, [], 3);
+            [hit, rf]     = max(cumsum(below & gate, 3) == 1, [], 3);
 
-            [rg, cg]  = ndgrid(1:R, 1:C);
             prevf     = max(rf - 1, 1);
-            v_hi      = wn(sub2ind([R C T_win], rg, cg, rf));      % at or below thresh
-            v_lo      = wn(sub2ind([R C T_win], rg, cg, prevf));   % above thresh
+            v_hi      = wn(sub2ind([R C T_x], rg, cg, rf));        % at or below thresh
+            v_lo      = wn(sub2ind([R C T_x], rg, cg, prevf));     % above thresh
             den       = v_lo - v_hi;
             rep_sub   = double(rf);
             okc       = logical(hit) & (rf > 1) & (den > 0);
@@ -370,19 +406,6 @@ function alternans = caAlternans3D(time, cData3D, opts)
             invalid       = ~logical(hit) | catd <= 0 | isnan(TTP_beat{j});
             catd(invalid) = nan;
             CaTD_beat{j, lv} = catd;
-        end
-    end
-
-    % ── SR Ca2+ mode: diastolic = pre-release peak (hi), not onset (lo) ───
-    % For Fluo-5N the signal is high at diastole and falls on release, so the
-    % diastolic level within each beat window is the maximum (hi), not lo.
-    if strcmpi(opts.SignalType, 'SR')
-        for j = 1:nBeats
-            sf  = bf(j, 1);
-            ef  = bf(j, 2);
-            win = cCorr(:,:, sf:ef);
-            hi_sr = max(win, [], 3);
-            diastolic_beat{j} = double(hi_sr) .* nan_mask;
         end
     end
 
@@ -493,28 +516,29 @@ function alternans = caAlternans3D(time, cData3D, opts)
         d       = odd_amp - even_amp;              % R x C x n_pairs
         d_mean  = mean(d, 3, 'omitnan');
         d_std   = std(d,  0, 3, 'omitnan');
-        tstat   = d_mean ./ (d_std / sqrt(n_pairs));
+        n_ok    = sum(isfinite(d), 3);             % pairs actually present per pixel
+        tstat   = d_mean ./ (d_std ./ sqrt(n_ok));
+        tstat(n_ok < 3) = NaN;
         tstat_map = tstat;
         try
-            pval_map = 2 * (1 - tcdf(abs(tstat), n_pairs - 1));
+            pval_map = 2 * (1 - tcdf(abs(tstat), max(n_ok - 1, 1)));
         catch
             pval_map = 2 * (1 - normcdf(abs(tstat)));
         end
     end
 
     % ── Spectral alternans index map ──────────────────────────────────────
-    % Power at 0.5 cycles/beat in the per-beat amplitude series.
-    spectral_map = nan(R, C);
+    % Power at 0.5 cycles/beat in the per-beat amplitude series.  Shared with
+    % analyzeAPAlternans via spectralAlternansMap.  The previous in-line
+    % version wrote finite zeros into the background; because the calcium mask
+    % sits below half the frame that made ca_sai exactly zero in ~79% of
+    % recordings, and 100% below 60 ms.
+    spectral_map    = nan(R, C);
+    spectral_k_map  = nan(R, C);
+    spectral_ok_map = false(R, C);
     if nBeats >= 4
-        all_amp = cat(3, amp_beat{:});              % R x C x nBeats
-        all_amp(isnan(all_amp)) = 0;
-        all_amp = all_amp - mean(all_amp, 3);       % zero-mean detrend
-        Y        = fft(all_amp, [], 3);
-        P        = abs(Y / nBeats).^2;
-        alt_bin  = floor(nBeats/2) + 1;
-        if alt_bin <= size(P, 3)
-            spectral_map = P(:,:, alt_bin);
-        end
+        [spectral_map, spectral_k_map, spectral_ok_map] = ...
+            spectralAlternansMap(cat(3, amp_beat{:}));
     end
 
     % ── Alternans ratio maps ───────────────────────────────────────────────
@@ -541,12 +565,16 @@ function alternans = caAlternans3D(time, cData3D, opts)
     phase_angle_map = nan(R, C);
     if nBeats >= 4
         all_amp = cat(3, amp_beat{:});       % R x C x nBeats
+        % Same masking defect as the spectral map had -- see the note in
+        % analyzeAPAlternans and in spectralAlternansMap.
+        ok_phase = all(isfinite(all_amp), 3);
         all_amp(isnan(all_amp)) = 0;
         all_amp = all_amp - mean(all_amp, 3);
         Y_amp   = fft(all_amp, [], 3);
         alt_bin = floor(nBeats/2) + 1;
         if alt_bin <= size(Y_amp, 3)
             phase_angle_map = angle(Y_amp(:,:, alt_bin));  % [-pi, pi]
+            phase_angle_map(~ok_phase) = NaN;
         end
     end
 
@@ -572,6 +600,8 @@ function alternans = caAlternans3D(time, cData3D, opts)
     alternans.pval_map      = pval_map;
     alternans.tstat_map     = tstat_map;
     alternans.spectral_map  = spectral_map;
+    alternans.spectral_k_map  = spectral_k_map;    % dimensionless, comparable
+    alternans.spectral_ok_map = spectral_ok_map;   % pixels that contributed
 
     % Alternans ratio maps  (|ALT| / mean_metric per pixel)
     alternans.amp_ratio_map  = amp_ratio_map;

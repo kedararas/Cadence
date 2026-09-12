@@ -233,6 +233,11 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
     end
 
     [gradient_mag, gradient_dir] = imgradient(apd_clean, 'sobel');
+    % imgradient's Sobel kernels ([1 2 1] smoothing x [1 0 -1] difference) are
+    % not normalised: a ramp of 1 ms/pixel returns 8.  Divide by 8 so the map
+    % is in the ms/pixel the header promises (verified on a synthetic ramp).
+    % Files written before this fix carry the 8x Sobel response.
+    gradient_mag = gradient_mag / 8;
 
     % Report the gradient only where the whole 3x3 Sobel footprint sits on
     % measured pixels.  The border ring carries the discontinuity at the edge
@@ -361,7 +366,11 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
             diast_end   = beat_frames(j+1, 1) - 1;
             beat_dur    = beat_frames(j, 2) - beat_frames(j, 1) + 1;
             diast_win   = max(2, round(0.10 * beat_dur));
-            diast_start = max(beat_frames(j, 2) + 1, diast_end - diast_win + 1);
+            % Contiguous fixed-length windows (beat j ends the frame before
+            % beat j+1 starts) leave no gap after beat_frames(j,2), which made
+            % this map all-NaN.  The diastole is the tail of beat j's own
+            % window, so bound the start by the window start instead.
+            diast_start = max(beat_frames(j, 1), diast_end - diast_win + 1);
             if diast_start <= diast_end && diast_end <= size(ca_norm, 3)
                 diast_ca(:,:,j) = mean(ca_norm(:,:, diast_start:diast_end), 3);
             end
