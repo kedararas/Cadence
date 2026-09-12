@@ -2,6 +2,7 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
 %MV_MARK  Blinded manual fiducial marking for software validation.
 %
 %   marks_file = mv_mark(manifest_file, reviewer_id)
+%   marks_file = mv_mark(manifest_file, reviewer_id, 'Lead', true)
 %   marks_file = mv_mark(..., 'Mode', 'alternans', 'Percent', 50)
 %
 %   Presents one pixel's optical trace at a time and records where a human
@@ -48,10 +49,31 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
 %   the clicked time, because a single diastolic sample is noise-dominated.
 %   Both behaviours are recorded in the output so they can be reported.
 %
+%   CLICK ORDER ('apd' mode)
+%   An activation click after the reviewer's own peak click, or a
+%   repolarization click before it, is refused on the spot and the reviewer is
+%   asked to click again.  The 50% guide line is crossed twice, and the
+%   downstroke crossing is an easy slip that yields a plausible short APD.  The
+%   check compares the reviewer's clicks with each other only; it never judges
+%   where on the upstroke they clicked.  mv_derive drops marks that break the
+%   same rule, for files written before this check existed.
+%
+%   LEAD SESSION AND THE POOL
+%   mv_sample_pixels oversamples candidates and leaves the pool OPEN.  The
+%   lead reviewer runs with 'Lead', true: candidates are presented in manifest
+%   order (not shuffled), and the session stops by itself once the target
+%   number of pixels has been ACCEPTED, at which point the pool is finalised
+%   (mv_finalize_pool) — accepted pixels in, skipped ones recorded, unreached
+%   candidates discarded.  Everyone else marks only the finalised pool, in a
+%   per-reviewer random order, and is refused while the pool is still open.
+%   The lead is blinded exactly like everyone else.
+%
 %   KEYS (while marking)
 %     u  undo last click      r  restart this pixel     s  skip (unmarkable)
 %     b  back one pixel       q  save and quit
 %
+%   A progress line and bar under the trace show marked / skipped / remaining
+%   (for the lead: accepted against the target, plus the candidate count).
 %   Progress is written to disk after every pixel, so the session is resumable:
 %   re-run with the same reviewer_id and marking continues where it stopped.
 %
@@ -66,9 +88,15 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
 %     'ActPercent'   upstroke percentage defining activation (default 50, to
 %                    match compute_lat_50)
 %     'BaselineWin'  half-width in ms for the baseline median (default 5)
+%     'Lead'         true for the lead reviewer building the pool (default false)
+%     'Preview'      draw the first pixel's screen and return without waiting
+%                    for input or writing anything (default false; for checking
+%                    the display, e.g. from a script)
 %     'Output'       marks path (default alongside the manifest)
 
     p = inputParser;
+    p.addParameter('Lead',        false, @(v) islogical(v) || isnumeric(v));
+    p.addParameter('Preview',     false, @(v) islogical(v) || isnumeric(v));
     p.addParameter('Mode',        'apd', @(v) any(strcmpi(v, {'apd','alternans'})));
     p.addParameter('Percent',     80,    @(v) isnumeric(v) && isscalar(v) && v > 0 && v < 100);
     p.addParameter('ActPercent',  50,    @(v) isnumeric(v) && isscalar(v) && v > 0 && v < 100);
@@ -77,6 +105,7 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
     p.parse(varargin{:});
     o = p.Results;
     o.Mode = lower(o.Mode);
+    o.Lead = logical(o.Lead);
 
     reviewer = char(string(reviewer_id));
     if isempty(reviewer)
@@ -88,6 +117,50 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
         error('mv_mark:badManifest', '%s does not contain a ''manifest'' struct.', manifest_file);
     end
     manifest = M.manifest;
+
+    % ---- pool status: who may mark what ----
+    % Manifests written before candidate pools existed are treated as final
+    % with every pixel active.
+    n_all = size(manifest.pixels, 1);
+    if isfield(manifest, 'pool_status')
+        pool_open = strcmp(manifest.pool_status, 'open');
+        active    = logical(manifest.active(:));
+        n_target  = manifest.n_target;
+    else
+        pool_open = false;
+        active    = true(n_all, 1);
+        n_target  = n_all;
+    end
+    if pool_open && ~o.Lead
+        error('mv_mark:poolOpen', ...
+              ['The pool in %s is still OPEN: the lead reviewer has not finished building ' ...
+               'it. Wait for the lead session to complete (or, if you are the lead, pass ' ...
+               '''Lead'', true).'], manifest_file);
+    end
+    if ~pool_open && o.Lead
+        warning('mv_mark:poolFinal', ...
+                'Pool already final (%d pixels); continuing as an ordinary reviewer session.', ...
+                sum(active));
+        o.Lead = false;
+    end
+    if o.Lead
+        shown = (1:n_all)';                 % manifest order: tiers / strata interleaved
+        % Stratified draws are balanced BY STRATUM, not just in total: the
+        % lead fills a per-stratum quota, and once a stratum is full its
+        % remaining candidates are passed over (a dim stratum is skipped more
+        % often, and a global count would let the bright ones crowd it out).
+        % Grid pools fill globally, tier order doing the spreading.
+        if isfield(manifest, 'sampling') && strcmp(manifest.sampling, 'stratified')
+            quota = floor(n_target / manifest.num_strata);
+            stratum_of = manifest.stratum(:);
+        else
+            quota = Inf;
+            stratum_of = ones(n_all, 1);
+        end
+    else
+        shown = find(active);
+        quota = Inf; stratum_of = ones(n_all, 1);
+    end
 
     if strcmp(o.Mode, 'alternans') && manifest.num_beats < 2
         warning('mv_mark:oneBeat', ...
@@ -118,7 +191,7 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
     T  = double(reshape(X, [], nt));
     T  = T(manifest.linear_index, wf(1):wf(2));            % nPix x nFrames
     t_ms = ((wf(1):wf(2)) - 1) / manifest.acqFreq * 1000;  % absolute ms
-    npix = size(T, 1);
+    npix = size(T, 1);                                     % ALL candidates
 
     % ---- resume or start ----
     if isempty(o.Output)
@@ -142,11 +215,20 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
                    'settings or a new Output file.'], ...
                   o.Output, marks.mode, marks.percent, prev_act, o.Mode, o.Percent, o.ActPercent);
         end
-        fprintf('Resuming %s: %d of %d pixels already marked.\n', ...
-                o.Output, sum(marks.done | marks.skipped), npix);
+        if isfield(marks, 'lead') && marks.lead ~= o.Lead
+            error('mv_mark:resumeLead', ...
+                  '%s was started as a %s session; pass the same ''Lead'' setting.', ...
+                  o.Output, ternary(marks.lead, 'lead', 'non-lead'));
+        end
+        fprintf('Resuming %s: %s\n', o.Output, progress_line(marks, o.Lead, n_target, numel(shown)));
     else
-        marks = new_marks(manifest, manifest_file, reviewer, o, npix);
-        fprintf('New marking session for reviewer ''%s'': %d pixels.\n', reviewer, npix);
+        marks = new_marks(manifest, manifest_file, reviewer, o, npix, shown);
+        if o.Lead
+            fprintf('New LEAD session for reviewer ''%s'': %d candidates, target %d.\n', ...
+                    reviewer, numel(shown), n_target);
+        else
+            fprintf('New marking session for reviewer ''%s'': %d pixels.\n', reviewer, numel(shown));
+        end
     end
 
     nclick = click_count(o.Mode);
@@ -160,23 +242,44 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
     % safer and what makes the session resumable.
 
     % ---- main loop over the reviewer's presentation order ----
-    k = find(~(marks.done | marks.skipped), 1);
-    if isempty(k); k = npix + 1; end
+    nshow = numel(marks.order);
+    visited = marks.done(marks.order) | marks.skipped(marks.order);
+    k = find(~visited, 1);
+    if isempty(k); k = nshow + 1; end
+    finalise = false;
 
-    while k >= 1 && k <= npix
+    while k >= 1 && k <= nshow
         if ~ishandle(fig)
             fprintf('Figure closed — saving and exiting.\n'); break;
         end
         i = marks.order(k);                     % index into manifest.pixels
+        if o.Lead && isfinite(quota) && ~marks.done(i) && ~marks.skipped(i) && ...
+           sum(marks.done(stratum_of == stratum_of(i))) >= quota
+            k = k + 1;                          % this stratum is full: pass over
+            continue;
+        end
         y = T(i, :);
 
-        [res, action] = mark_one(fig, t_ms, y, k, npix, o, nclick);
+        prog = progress_info(marks, o.Lead, n_target, nshow, k);
+        [res, action] = mark_one(fig, t_ms, y, prog, o, nclick);
+        if o.Preview
+            marks_file = '';                    % nothing written, figure left open
+            return;
+        end
 
         switch action
             case 'done'
                 marks = store(marks, i, res, o, t_ms, y);
                 marks.done(i) = true; marks.skipped(i) = false;
                 k = k + 1;
+                if o.Lead
+                    if isfinite(quota)
+                        got = arrayfun(@(s) sum(marks.done(stratum_of == s)), 1:manifest.num_strata);
+                        finalise = all(got >= quota);
+                    else
+                        finalise = sum(marks.done) >= n_target;
+                    end
+                end
             case 'skip'
                 marks.skipped(i) = true; marks.done(i) = false;
                 marks.clicks{i}  = zeros(0, 2);
@@ -192,24 +295,89 @@ function marks_file = mv_mark(manifest_file, reviewer_id, varargin)
                 return;
         end
         save_marks(o.Output, marks);            % resumable after every pixel
+        if finalise; break; end
     end
 
     if ishandle(fig); close(fig); end
     save_marks(o.Output, marks);
-    fprintf('Complete: %d marked, %d skipped -> %s\n', ...
-            sum(marks.done), sum(marks.skipped), o.Output);
-    fprintf('Next: mv_derive(''%s'')\n', o.Output);
     marks_file = o.Output;
+
+    if o.Lead
+        if ~finalise
+            % Candidates exhausted before the target: finalise with what there is,
+            % loudly (mv_finalize_pool warns and records the shortfall).
+            fprintf('Candidate list exhausted at %d accepted (target %d).\n', ...
+                    sum(marks.done), n_target);
+        end
+        mv_finalize_pool(manifest_file, 'Marks', o.Output);
+    else
+        fprintf('Complete: %d marked, %d skipped -> %s\n', ...
+                sum(marks.done), sum(marks.skipped), o.Output);
+    end
+    fprintf('Next: mv_derive(''%s'')\n', o.Output);
 end
 
 
 % ======================================================================
-function marks = new_marks(manifest, manifest_file, reviewer, o, npix)
+function prog = progress_info(marks, lead, n_target, nshow, k)
+%PROGRESS_INFO  What the reviewer has done and how much is left.
+    prog = struct();
+    prog.done    = sum(marks.done);
+    prog.skipped = sum(marks.skipped);
+    prog.lead    = lead;
+    prog.k       = k;
+    prog.nshow   = nshow;
+    if lead
+        prog.target    = n_target;
+        prog.remaining = max(0, n_target - prog.done);
+    else
+        prog.target    = nshow;
+        prog.remaining = max(0, nshow - prog.done - prog.skipped);
+    end
+    prog.frac = min(1, prog.done / max(prog.target, 1));
+    prog.line = progress_line(marks, lead, n_target, nshow, k);
+end
+
+
+function s = progress_line(marks, lead, n_target, nshow, k)
+    nd = sum(marks.done); ns = sum(marks.skipped);
+    if lead
+        s = sprintf('accepted %d of %d target  |  skipped %d  |  %d to go', ...
+                    nd, n_target, ns, max(0, n_target - nd));
+        if nargin >= 5
+            s = sprintf('%s  (candidate %d of %d)', s, k, nshow);
+        end
+    else
+        s = sprintf('marked %d  |  skipped %d  |  %d of %d remaining', ...
+                    nd, ns, max(0, nshow - nd - ns), nshow);
+        if nargin >= 5
+            s = sprintf('%s  (pixel %d of %d)', s, k, nshow);
+        end
+    end
+end
+
+
+function out = ternary(c, a, b)
+    if c; out = a; else; out = b; end
+end
+
+
+% ======================================================================
+function marks = new_marks(manifest, manifest_file, reviewer, o, npix, shown)
     % Presentation order is randomized PER REVIEWER: it removes order/fatigue
     % effects from the inter-observer comparison and makes it impractical for
     % two reviewers to sit together and mark "the same one" in step.
+    % The LEAD is the exception: candidates go in manifest order, because that
+    % order is what keeps strata balanced (stratified) or the lattice evenly
+    % filled (grid) wherever the session stops.
     seed = mod(sum(double(reviewer)) * 7919 + manifest.seed, 2^31 - 1);
     rng(seed, 'twister');
+    shown = shown(:);
+    if o.Lead
+        order = shown;
+    else
+        order = shown(randperm(numel(shown)));
+    end
 
     marks = struct();
     marks.manifest_file   = char(manifest_file);
@@ -220,8 +388,9 @@ function marks = new_marks(manifest, manifest_file, reviewer, o, npix)
     marks.percent         = o.Percent;
     marks.act_percent     = o.ActPercent;
     marks.baseline_win_ms = o.BaselineWin;
+    marks.lead            = o.Lead;
     marks.order_seed      = seed;
-    marks.order           = randperm(npix)';
+    marks.order           = order;             % indices into manifest.pixels
     marks.done            = false(npix, 1);
     marks.skipped         = false(npix, 1);
     marks.clicks          = repmat({zeros(0, 2)}, npix, 1);
@@ -264,16 +433,46 @@ function lbl = click_label(mode, j, pct, act_pct)
 end
 
 
-function [res, action] = mark_one(fig, t_ms, y, k, npix, o, nclick)
+function why = order_problem(mode, res, x)
+%ORDER_PROBLEM  Message if a click at time x would be out of order, else ''.
+%   Same rule mv_derive applies afterwards: activation before the peak click,
+%   repolarization after it.  Compares clicks with clicks, nothing else.
+    why = '';
+    if ~strcmp(mode, 'apd') || size(res, 1) < 2, return; end
+    t_peak = res(2, 1);
+    switch size(res, 1) + 1
+        case 3
+            if x > t_peak
+                why = 'Refused: activation must be on the UPSTROKE, before your peak click. Click again.';
+            end
+        case 4
+            if x < t_peak
+                why = 'Refused: repolarization must come after your peak click. Click again.';
+            end
+    end
+end
+
+
+function [res, action] = mark_one(fig, t_ms, y, prog, o, nclick)
 %MARK_ONE  Collect one pixel's clicks.  Returns raw click coordinates.
 
-    res = zeros(0, 2);
-    t0  = tic;
+    res  = zeros(0, 2);
+    t0   = tic;
+    note = '';                                   % refusal message for the last click
 
     while true
         if ~ishandle(fig); action = 'quit'; return; end
-        figure(fig); clf(fig);
-        ax = axes('Parent', fig);
+        % The window can be closed while a redraw is in flight (the handle
+        % test above passes, then the axes call finds a deleted figure).
+        % Treat that like any other close: save and quit, never error out.
+        try
+            figure(fig); clf(fig);
+            set(fig, 'Units', 'normalized');
+            ax = axes('Parent', fig, 'Units', 'normalized', 'Position', [0.10 0.20 0.85 0.64]);
+            progress_bar(fig, prog);
+        catch
+            action = 'quit'; return;
+        end
         plot(ax, t_ms, y, '-', 'Color', [0.20 0.35 0.75], 'LineWidth', 1.2);
         hold(ax, 'on'); grid(ax, 'on');
         xlabel(ax, 'Time (ms)'); ylabel(ax, 'Fluorescence (a.u.)');
@@ -307,17 +506,25 @@ function [res, action] = mark_one(fig, t_ms, y, k, npix, o, nclick)
         end
 
         if j <= nclick
-            title(ax, {sprintf('Pixel %d of %d   —   click %d of %d', k, npix, j, nclick), ...
+            title(ax, {sprintf('Click %d of %d', j, nclick), ...
                        click_label(o.Mode, j, o.Percent, o.ActPercent), ...
                        'u undo   r restart   s skip   b back   q save+quit'}, ...
                       'FontSize', 11);
         else
-            title(ax, {sprintf('Pixel %d of %d   —   all %d clicks placed', k, npix, nclick), ...
+            title(ax, {sprintf('All %d clicks placed', nclick), ...
                        'ENTER or click to accept', ...
                        'u undo   r restart   s skip   b back   q save+quit'}, ...
                       'FontSize', 11);
         end
+        if ~isempty(note)
+            text(ax, 0.5, 0.96, note, 'Units', 'normalized', 'HorizontalAlignment', 'center', ...
+                 'VerticalAlignment', 'top', 'Color', [0.80 0.10 0.10], 'FontWeight', 'bold', ...
+                 'BackgroundColor', 'w');
+        end
         hold(ax, 'off');
+        if o.Preview
+            drawnow; action = 'preview'; return;
+        end
 
         % ---- one interaction ----
         try
@@ -333,8 +540,10 @@ function [res, action] = mark_one(fig, t_ms, y, k, npix, o, nclick)
             switch ch
                 case 'u'
                     if ~isempty(res); res(end, :) = []; end
+                    note = '';
                 case 'r'
                     res = zeros(0, 2);
+                    note = '';
                 case 's'
                     action = 'skip'; return;
                 case 'b'
@@ -349,12 +558,23 @@ function [res, action] = mark_one(fig, t_ms, y, k, npix, o, nclick)
                     end
             end
         else
+            % Only clicks INSIDE the trace axes count: a click on the progress
+            % bar or the margins must not be read as a fiducial.
+            fp = get(fig, 'CurrentPoint');                   % normalized figure units
+            ap = get(ax, 'Position');
+            if fp(1) < ap(1) || fp(1) > ap(1) + ap(3) || fp(2) < ap(2) || fp(2) > ap(2) + ap(4)
+                continue;
+            end
             cp = get(ax, 'CurrentPoint');
             x  = cp(1, 1);
             if x < t_ms(1) || x > t_ms(end)
                 continue;                                    % click outside the axes
             end
             if size(res, 1) < nclick
+                note = order_problem(o.Mode, res, x);
+                if ~isempty(note)
+                    continue;                                % refused: redraw with the message
+                end
                 res(end+1, :) = [x, cp(1, 2)];               %#ok<AGROW>
                 if size(res, 1) == nclick
                     % Redraw once so the reviewer sees the final placement,
@@ -394,6 +614,26 @@ function marks = store(marks, i, res, o, t_ms, y)
         marks.t_peak2_ms(i) = res(3, 1);
         marks.v_peak2(i)    = trace_at(t_ms, y, res(3, 1), 0);
     end
+end
+
+
+function progress_bar(fig, prog)
+%PROGRESS_BAR  Marked / skipped / remaining, as a line and a bar under the trace.
+    pax = axes('Parent', fig, 'Units', 'normalized', 'Position', [0.10 0.05 0.85 0.025], ...
+               'XLim', [0 1], 'YLim', [0 1], 'XTick', [], 'YTick', [], 'Box', 'on');
+    hold(pax, 'on');
+    patch(pax, [0 1 1 0], [0 0 1 1], [0.94 0.94 0.94], 'EdgeColor', 'none');
+    if prog.frac > 0
+        col = [0.20 0.55 0.30];
+        if prog.lead; col = [0.20 0.35 0.75]; end
+        patch(pax, [0 prog.frac prog.frac 0], [0 0 1 1], col, 'EdgeColor', 'none');
+    end
+    hold(pax, 'off');
+    text(pax, 0, 1.6, prog.line, 'Units', 'data', 'FontSize', 10, ...
+         'VerticalAlignment', 'bottom', 'Interpreter', 'none');
+    text(pax, 1, 0.5, sprintf(' %.0f%%', 100 * prog.frac), 'Units', 'data', ...
+         'HorizontalAlignment', 'left', 'FontSize', 9, 'Clipping', 'off');
+    set(pax, 'HitTest', 'off');
 end
 
 

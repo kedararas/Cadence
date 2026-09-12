@@ -71,23 +71,34 @@ visibly standalone costs about a hundred lines and settles the question at a gla
 ```matlab
 addpath('manual_validation_helper');
 
-% 1. Draw the pixel sample — ONCE per recording, shared by all reviewers.
+% 1. Draw the CANDIDATES — ONCE per recording. Twice the pool size, from
+%    pixels above the same adaptive SNR floor Feature Extraction masks with.
 %    Reviewers mark CAM1_average by default, the same ensemble-averaged beat
 %    feature extraction uses. 'grid' lays the pixels on a lattice so they can
 %    be interpolated into a manual map; 'stratified' draws them by SNR tercile.
 manifest = mv_sample_pixels('rat-conditioned.mat', 'CAM1', 100, 'Sampling', 'grid');
 
-% 2. Each reviewer marks the same pixels, independently and blinded
-mv_mark(manifest.manifest_file, 'AA');
+% 2. The LEAD reviewer builds the pool: candidates are shown in manifest
+%    order, unmarkable ones are skipped, and the session stops by itself at
+%    100 accepted. Those 100 are the pool; the skips are recorded.
+mv_mark(manifest.manifest_file, 'AA', 'Lead', true);
+
+% 3. Every other reviewer marks the pool, independently and blinded
+%    (refused until the lead session has finished)
 mv_mark(manifest.manifest_file, 'SP');
 mv_mark(manifest.manifest_file, 'EM');
 
-% 3. Derive metric values from the saved clicks
+% 4. Derive metric values from the saved clicks
 tbl = mv_derive({'..._AA_marks.mat', '..._SP_marks.mat', '..._EM_marks.mat'});
 
-% 4. Compare against CADENCE, with inter-observer spread as the benchmark
+% 5. Compare against CADENCE, with inter-observer spread as the benchmark
 stats = mv_compare(tbl, 'rat-metrics.mat', 'Field', 'apd_data');
 ```
+
+In the breadth arm the single reviewer *is* the lead, so steps 2 and 3 collapse into
+one session. The marking window shows a progress line and bar throughout — for the
+lead, accepted against the target plus the candidate count; for everyone else,
+marked, skipped and remaining.
 
 For calcium, point step 1 at the calcium camera and mark that channel separately:
 `mv_sample_pixels('pig-conditioned.mat', 'CAM2', 100, 'Sampling', 'grid')`. Rabbit
@@ -106,11 +117,12 @@ confusion, since they live in the same folder.
 
 | | When | What it covers |
 |---|---|---|
-| `mv_sample_pixels` → `mv_mark` ×3 → `mv_derive` → `mv_compare` | once per **recording × channel** | activation, APD/CaTD at every level, amplitude |
+| `mv_sample_pixels` → `mv_mark` (lead) → `mv_mark` ×2 → `mv_derive` → `mv_compare` | once per **recording × channel** | activation, APD/CaTD at every level, amplitude |
 | the same chain with `'Mode','alternans'` | once per **alternans-positive recording × channel** | amplitude alternans |
 | `mv_paced_df` | **once**, across every paced recording you own | dominant frequency, against the pacing hardware |
 | `mv_synth_cv`, `mv_cv_envelope`, `mv_lat_quantization` | **once** | conduction velocity, against a synthetic planar wave |
 | `mv_rise_test` | **once** (and after any edit to `extract_rise_time`) | rise-time algorithm, against analytic truth |
+| `mv_lat_test` | **once** (and after any edit to `compute_lat_50`) | activation-time algorithm, against analytic truth |
 | `mv_selftest` | **once**, before recruiting reviewers | the harness itself |
 
 `mv_rise_test` and `mv_selftest` are regression tests, not study instruments: they
@@ -227,6 +239,16 @@ repolarization level, and the reviewer then marks where the trace crosses it. Th
 converts an unreliable judgement ("where is 80% repolarized?") into a reliable one
 ("where does the trace cross this line?") without automating the decision.
 
+**Clicks out of order are slips, and are handled by the clicks alone.** The 50% guide
+line is crossed twice, so an activation click can land on the downstroke. That gives a
+short but positive APD, which the APD <= 0 check does not catch. In the first study
+this happened 4 times in 3,600 marks, all by one reviewer. `mv_mark` now refuses an
+activation click after the reviewer's own peak click, or a repolarization click before
+it. `mv_derive` drops such marks from older files and lists them in
+`tbl.Properties.UserData.dropped`. Neither rule looks at a CADENCE value, so applying them
+cannot favour the software. The rule was written after those slips were seen, so report
+results with and without it.
+
 **Activation gets a guide line too, and it must.** CADENCE times activation at the
 50% baseline-to-peak crossing of the upstroke (`compute_lat_50`), not at maximum
 dV/dt. Asking a reviewer for "the upstroke" invites them to mark max dV/dt, and the
@@ -235,6 +257,37 @@ disagreement when it is really the two sides measuring different quantities. So 
 third click is marked against a 50% guide line, and `mv_mark`'s `ActPercent` defaults
 to 50 to match the code under test. This matters twice over: APD is measured from the
 activation click, so it inherits any error there.
+
+**Candidates, then a pool — the lead decides markability, not the code.** A pixel
+can clear an SNR floor and still be unmarkable: a distorted morphology, a motion
+artefact, a double hump. Left as is, reviewers skip such pixels and the study ends up
+short of its count, unevenly across reviewers. The harness must not pre-screen them
+itself — "is this a usable action potential" is exactly the judgement under test —
+so `mv_sample_pixels` draws **twice** the pool size and leaves the pool *open*. The
+**lead reviewer** then runs `mv_mark(..., 'Lead', true)`: candidates come up in
+manifest order, the lead marks or skips each, and the session stops on its own when
+the target is reached. Accepted pixels become the pool (`manifest.active`), the
+lead's skips are recorded and reportable as a skip rate, and candidates never reached
+are discarded. Other reviewers, `mv_derive` and `mv_compare` see the pool only, and a
+non-lead session is refused while the pool is open. The lead is blinded exactly like
+everyone else. Candidate order is built so the pool is sound wherever the lead
+stops: `'stratified'` interleaves strata round-robin and the lead fills a
+**per-stratum quota** (a dim stratum is skipped more, and a global count would let
+the bright ones crowd it out); `'grid'` presents the base lattice first, then a
+lattice offset by half a stride (the cell centres), so the pool stays evenly spread.
+Grid strata are assigned by rank once the pool is final.
+
+The population this validates is therefore *pixels a trained observer can mark
+above the analysis-mask floor*, and the Methods must say so. The skip rate is part
+of the result.
+
+**Candidates are drawn above the adaptive SNR floor.** Feature Extraction masks its
+maps with `create_snr_mask(snr, [], true)` — floor = max(1.5, half the median tissue
+SNR) — so pixels below it have no CADENCE value and were being dropped in
+`mv_compare` anyway. `mv_sample_pixels` now applies the same rule (re-implemented in
+one line, so the harness still imports nothing from the pipeline) and records the
+resolved floor in the manifest. Consequence for the SNR envelope: the lowest stratum
+means "usable but dim", not "noise". `'SNRFloor', 0` restores the old SNR > 0 rule.
 
 **Seeded sampling, in one of two layouts.** Either way the seed makes the pixel list
 a pre-registered choice — hand-picking pixels, or redrawing until the numbers look
@@ -327,7 +380,9 @@ recording per species, not four of one species — otherwise reviewer identity i
 confounded with species and any species difference in agreement is uninterpretable.
 
 **~100 pixels per recording, on a grid.** Cheaper than 150 and strictly more useful,
-for the spatial-correlation reason above plus the map panels.
+for the spatial-correlation reason above plus the map panels. The lead visits more
+than 100 — 100 plus whatever they skip — so the lead's budget grows by the skip rate;
+everyone else marks exactly the pool.
 
 **Alternans is a separate, targeted session.** It is a conditional metric: it only
 exists where the tissue alternates. Run it on the two or three recordings that

@@ -1,13 +1,48 @@
 function manifest = mv_sample_pixels(conditioned_file, cam, n_pixels, varargin)
-%MV_SAMPLE_PIXELS  Draw the pixel sample every reviewer will mark.
+%MV_SAMPLE_PIXELS  Draw the candidate pixels a lead reviewer turns into the pool.
 %
 %   manifest = mv_sample_pixels(conditioned_file, cam, n_pixels)
 %   manifest = mv_sample_pixels(..., 'Sampling', 'grid')
 %   manifest = mv_sample_pixels(..., 'Name', value)
 %
-%   Builds the pixel list that every reviewer will mark.  Run this ONCE per
+%   Builds the pixel list for one recording x channel.  Run this ONCE per
 %   recording: all reviewers must mark the SAME pixels, or the inter-observer
 %   comparison in mv_compare has nothing to pair up.
+%
+%   CANDIDATES, THEN A POOL
+%
+%   A pixel can clear an SNR floor and still be unmarkable — a distorted
+%   morphology, a motion artefact, a double hump — and the harness must not
+%   decide that for itself, because "is this a usable action potential" is a
+%   judgement that belongs with the human, not with code that would then be
+%   pre-screening the software's own input.  So the draw is oversampled by
+%   'Candidates' (default 2x n_pixels) and written with the pool OPEN.  The
+%   LEAD reviewer then runs
+%
+%       mv_mark(manifest_file, 'AB', 'Lead', true)
+%
+%   which presents the candidates in manifest order and stops when n_pixels
+%   have been accepted.  Accepted pixels become the pool; the lead's skips are
+%   recorded (and reportable as a skip rate); candidates never reached are
+%   discarded.  Every other reviewer, and mv_compare, sees only the pool.
+%   Blinding is unchanged: the lead sees no CADENCE value and no pixel position.
+%
+%   Pass 'Candidates', 1 for the older behaviour, where the draw IS the pool
+%   and reviewers skip what they cannot mark.
+%
+%   SNR FLOOR
+%
+%   Candidates are drawn from pixels at or above an SNR floor.  The default is
+%   the same ADAPTIVE rule Feature Extraction masks its maps with,
+%
+%       floor = max(1.5, 0.5 * median(snr(snr > 1.5)))
+%
+%   re-implemented here (one line) rather than imported, so the harness stays
+%   independent of the pipeline.  Sampling from the same floor makes the
+%   comparison like-for-like: pixels below it have no CADENCE value to compare
+%   against and were being dropped in mv_compare anyway.  One consequence to
+%   state in Methods: the SNR envelope then spans above-floor pixels only, so
+%   the lowest stratum means "usable but dim", not "noise".
 %
 %   TWO SAMPLING MODES
 %
@@ -18,14 +53,21 @@ function manifest = mv_sample_pixels(conditioned_file, cam, n_pixels, varargin)
 %       terciles lets mv_compare report agreement AS A FUNCTION OF SNR, which
 %       is the operating envelope a user actually needs ("APD80 agrees within
 %       5 ms above SNR 8") and pre-empts the obvious criticism that the
-%       validation only used clean signals.
+%       validation only used clean signals.  Candidates are interleaved
+%       round-robin across strata, so wherever the lead stops the pool stays
+%       balanced.
 %
 %     'grid'  Regular lattice over the tissue.  Costs the same number of marks
 %       but places them evenly, so they can be INTERPOLATED INTO A MANUAL MAP.
 %       Scattered pixels cannot be, and the manual-vs-automated map panels are
 %       half the point of the validation figure.  The same marks then do triple
 %       duty: map, agreement statistics, and the SNR envelope.  SNR strata are
-%       assigned AFTER selection (post-stratified) rather than driving it.
+%       assigned AFTER the pool is final (post-stratified) rather than driving
+%       the draw.  Candidates come in TIERS: tier 1 is the lattice at the
+%       chosen stride, tier 2 the lattice offset by half a stride (the cell
+%       centres), then the row- and column-offset lattices.  The lead marks
+%       tier 1 first and fills from later tiers, so the pool stays evenly
+%       spread wherever it stops.
 %
 %       Honesty rule that goes with this mode: interpolate for the MAP PANELS
 %       only.  Every statistic is computed at the marked points, and the
@@ -38,25 +80,29 @@ function manifest = mv_sample_pixels(conditioned_file, cam, n_pixels, varargin)
 %   Inputs
 %     conditioned_file  path to a *-conditioned.mat (signal-conditioning output)
 %     cam               "CAM1" | "CAM2" | "CAM3" | "CAM4"
-%     n_pixels          pixels to sample.  Exact for 'stratified'; a TARGET for
-%                       'grid', where achievable counts are quantized by the
-%                       lattice (the chosen stride and actual count are printed
-%                       and recorded in the manifest).
+%     n_pixels          pixels wanted in the POOL.  Exact for 'stratified' when
+%                       the lead reaches it; a TARGET for 'grid', where tier-1
+%                       counts are quantized by the lattice (the chosen stride
+%                       and actual counts are printed and recorded).
 %
 %   Name-value
+%     'Candidates' oversampling factor (default 2).  Candidates drawn =
+%                ceil(Candidates * n_pixels), capped by what the floor allows.
+%                1 = the draw is the pool (no lead session).
+%     'SNRFloor' 'adaptive' (default) | numeric.  0 reproduces the old
+%                "SNR > 0 is tissue" convention.
 %     'Sampling' 'stratified' (default) | 'grid'.
 %     'Stride'   lattice spacing in pixels for 'grid'.  Default [] = choose the
-%                stride whose yield comes closest to n_pixels.
+%                stride whose tier-1 yield comes closest to n_pixels.
 %     'MetricsFile'  path to the *-metrics.mat this recording will be compared
-%                against.  STRONGLY RECOMMENDED.  Takes the marking window from
-%                the analysis window CADENCE actually used, so reviewers mark
-%                the same beat the software measured.  Without it the window is
-%                chosen independently from the pacing trace, which is fine for
-%                DURATIONS (APD, CaTD, rise time — beat-to-beat variation adds
-%                scatter, not bias) but makes any window-relative TIME
-%                (activation, repolarization) impossible to compare at all.
-%                Reads only the window: no metric value is opened, so blinding
-%                is unaffected.
+%                against.  STRONGLY RECOMMENDED for the raw arm.  Takes the
+%                marking window from the analysis window CADENCE actually used,
+%                so reviewers mark the same beat the software measured.  Without
+%                it the window is chosen independently from the pacing trace,
+%                which is fine for DURATIONS (APD, CaTD, rise time) but makes
+%                any window-relative TIME (activation, repolarization)
+%                impossible to compare at all.  Reads only the window: no metric
+%                value is opened, so blinding is unaffected.
 %     'Window'   [t0 t1] in ms — the beat(s) to mark.  All reviewers mark the
 %                same window.  Default: from 'MetricsFile' if given, else auto
 %                from the pacing trace (analog1), taking the beat starting at
@@ -69,23 +115,29 @@ function manifest = mv_sample_pixels(conditioned_file, cam, n_pixels, varargin)
 %     'Output'   manifest path (default alongside the conditioned file).
 %
 %   Output
-%     manifest   struct, also saved to disk, consumed by mv_mark.
+%     manifest   struct, also saved to disk, consumed by mv_mark.  The pixel
+%                arrays (pixels, linear_index, snr, stratum, tier) list ALL
+%                candidates; manifest.active says which are in the pool and
+%                manifest.pool_status is 'open' until the lead finalises it.
 %
 %   Deliberately standalone: this file loads the .mat with plain load() and does
 %   its own field checks rather than calling load_cmos, and computes nothing that
 %   feature_extraction_helper computes.  See README.md.
 
     p = inputParser;
-    p.addParameter('Source',    'ensemble', @(v) any(strcmpi(v, {'ensemble','raw'})));
-    p.addParameter('Sampling',  'stratified', @(v) any(strcmpi(v, {'stratified','grid'})));
-    p.addParameter('Stride',    [],  @(v) isempty(v) || (isnumeric(v) && isscalar(v) && v >= 1));
+    p.addParameter('Source',     'ensemble', @(v) any(strcmpi(v, {'ensemble','raw'})));
+    p.addParameter('Sampling',   'stratified', @(v) any(strcmpi(v, {'stratified','grid'})));
+    p.addParameter('Candidates', 2,   @(v) isnumeric(v) && isscalar(v) && v >= 1);
+    p.addParameter('SNRFloor',   'adaptive', @(v) (isnumeric(v) && isscalar(v) && v >= 0) || ...
+                                              ((ischar(v) || isstring(v)) && strcmpi(v, 'adaptive')));
+    p.addParameter('Stride',     [],  @(v) isempty(v) || (isnumeric(v) && isscalar(v) && v >= 1));
     p.addParameter('MetricsFile', '', @(v) ischar(v) || isstring(v));
-    p.addParameter('Window',    [],  @(v) isempty(v) || (isnumeric(v) && numel(v) == 2));
-    p.addParameter('BeatIndex', 5,   @(v) isnumeric(v) && isscalar(v) && v >= 1);
-    p.addParameter('NumBeats',  1,   @(v) isnumeric(v) && isscalar(v) && v >= 1);
-    p.addParameter('NumStrata', 3,   @(v) isnumeric(v) && isscalar(v) && v >= 1);
-    p.addParameter('Seed',      42,  @(v) isnumeric(v) && isscalar(v));
-    p.addParameter('Output',    '',  @(v) ischar(v) || isstring(v));
+    p.addParameter('Window',     [],  @(v) isempty(v) || (isnumeric(v) && numel(v) == 2));
+    p.addParameter('BeatIndex',  5,   @(v) isnumeric(v) && isscalar(v) && v >= 1);
+    p.addParameter('NumBeats',   1,   @(v) isnumeric(v) && isscalar(v) && v >= 1);
+    p.addParameter('NumStrata',  3,   @(v) isnumeric(v) && isscalar(v) && v >= 1);
+    p.addParameter('Seed',       42,  @(v) isnumeric(v) && isscalar(v));
+    p.addParameter('Output',     '',  @(v) ischar(v) || isstring(v));
     p.parse(varargin{:});
     o = p.Results;
     o.Sampling = lower(o.Sampling);
@@ -186,17 +238,25 @@ function manifest = mv_sample_pixels(conditioned_file, cam, n_pixels, varargin)
               win_ms(1), win_ms(2), diff(win_fr) + 1);
     end
 
-    % ---- tissue pixels ----
-    % Tissue is SNR > 0, matching the convention validate_conditioned uses.
+    % ---- tissue pixels: SNR floor ----
+    % Mirrors create_snr_mask's adaptive rule without calling it (see header).
+    % No morphological cleanup: that needs the Image Processing Toolbox and
+    % would only matter at the mask border, which the lattice/draw rarely hits.
+    [floor_snr, floor_mode] = resolve_floor(snr, o.SNRFloor);
+    if floor_snr > 0
+        tissue = isfinite(snr) & snr >= floor_snr;
+    else
+        tissue = isfinite(snr) & snr > 0;      % legacy convention
+    end
+    lin = find(tissue);
+    if isempty(lin)
+        error('mv_sample_pixels:noTissue', ...
+              'No pixels at or above the SNR floor %.2f (%s) in %s_SNR.', floor_snr, floor_mode, cam);
+    end
+
     % Also require the trace to be finite and non-flat inside the marking
     % window: a pixel that is flat there is unmarkable and would only ever
     % produce a skip.
-    tissue = isfinite(snr) & snr > 0;
-    lin    = find(tissue);
-    if isempty(lin)
-        error('mv_sample_pixels:noTissue', 'No pixels with SNR > 0 in %s_SNR.', cam);
-    end
-
     W  = double(reshape(X, nr * nc, nt));
     W  = W(lin, win_fr(1):win_fr(2));
     ok = all(isfinite(W), 2) & (max(W, [], 2) - min(W, [], 2)) > 0;
@@ -207,67 +267,65 @@ function manifest = mv_sample_pixels(conditioned_file, cam, n_pixels, varargin)
     end
     s_ok = snr(lin);
 
-    % ---- select the pixels ----
+    % ---- draw the candidates ----
     % pctile/randperm rather than quantile/randsample: base MATLAB only, so the
     % harness runs without the Statistics Toolbox.
+    n_cand = ceil(o.Candidates * n_pixels);
+    rng(o.Seed, 'twister');
+
     switch o.Sampling
         case 'stratified'
-            edges = [-inf, pctile(s_ok, (1:o.NumStrata-1) / o.NumStrata * 100), inf];
-            per   = floor(n_pixels / o.NumStrata);
+            edges    = [-inf, pctile(s_ok, (1:o.NumStrata-1) / o.NumStrata * 100), inf];
+            per      = floor(n_pixels / o.NumStrata);
+            per_cand = ceil(o.Candidates * per);
 
-            rng(o.Seed, 'twister');
-            sel = []; stratum = [];
+            lists = cell(1, o.NumStrata);
             for k = 1:o.NumStrata
                 in_k = find(s_ok > edges(k) & s_ok <= edges(k+1));
-                take = min(per, numel(in_k));
-                if take < per
+                take = min(per_cand, numel(in_k));
+                if numel(in_k) < per
                     warning('mv_sample_pixels:thinStratum', ...
-                            'SNR stratum %d has only %d pixels; requested %d.', k, numel(in_k), per);
+                            'SNR stratum %d has only %d pixels; the pool wants %d from it.', ...
+                            k, numel(in_k), per);
                 end
-                pick    = in_k(randperm(numel(in_k), take));
-                sel     = [sel;     lin(pick)];      %#ok<AGROW>
-                stratum = [stratum; repmat(k, take, 1)]; %#ok<AGROW>
+                lists{k} = lin(in_k(randperm(numel(in_k), take)));
             end
+            % Round-robin across strata: the lead marks in this order and may
+            % stop anywhere, so any prefix must be as balanced as the whole.
+            [sel, stratum] = interleave(lists);
+            tier        = nan(numel(sel), 1);
             stride_used = NaN;
 
         case 'grid'
             usable = false(nr, nc);
             usable(lin) = true;
-            [sel, stride_used] = grid_sample(usable, n_pixels, o.Stride);
-            if isempty(sel)
+            % With Candidates = 1 the draw is the pool, so only the base
+            % lattice is used (a later tier would break the single-lattice
+            % property the map interpolation relies on).
+            if o.Candidates > 1; want = n_cand; else; want = 0; end
+            [tiers, stride_used] = grid_tiers(usable, n_pixels, o.Stride, want);
+            if isempty(tiers{1})
                 error('mv_sample_pixels:emptyGrid', ...
                       'No lattice point at stride %d fell on usable tissue.', stride_used);
             end
-
-            % Post-stratify.  The lattice fixes WHERE the pixels are, so strata
-            % are assigned afterwards from the SNR the sample happens to span.
-            % mv_compare's by-stratum reporting is unchanged; only the sampling
-            % feeding it differs, and post-stratification is the honest way to
-            % keep that reporting when coverage, not SNR balance, sets the draw.
-            %
-            % Assigned by RANK, not by percentile value.  An SNR map with few
-            % distinct values (or heavy ties at one level) collapses percentile
-            % edges onto each other and silently empties a stratum.  Equal-count
-            % groups are what "terciles" means operationally here, and they are
-            % what the stratified mode produces by construction, so a stratum
-            % index means the same thing in both modes.
-            if numel(sel) < o.NumStrata
-                error('mv_sample_pixels:tooFewForStrata', ...
-                      'Grid yielded %d pixels, fewer than the %d requested strata.', ...
-                      numel(sel), o.NumStrata);
+            % Random order WITHIN each tier: a partly-marked tier is then still
+            % spatially spread rather than filled from one corner.
+            sel = []; tier = [];
+            for t = 1:numel(tiers)
+                pts = tiers{t};
+                pts = pts(randperm(numel(pts)));
+                sel  = [sel;  pts(:)];                       %#ok<AGROW>
+                tier = [tier; repmat(t, numel(pts), 1)];     %#ok<AGROW>
             end
-            s_sel      = snr(sel);
-            [~, ord]   = sort(s_sel, 'ascend');
-            cuts       = round(linspace(0, numel(sel), o.NumStrata + 1));
-            stratum    = zeros(numel(sel), 1);
-            for k = 1:o.NumStrata
-                stratum(ord(cuts(k)+1 : cuts(k+1))) = k;
-            end
-            % Record the boundaries the ranking actually landed on.
-            edges = [-inf, arrayfun(@(k) s_sel(ord(cuts(k+1))), 1:o.NumStrata-1), inf];
+            % Strata are assigned by rank over the FINAL pool (mv_finalize_pool),
+            % since the lattice fixes where the pixels are, not which SNR they
+            % span.  Until then they are undefined.
+            stratum = nan(numel(sel), 1);
+            edges   = [];
     end
 
     [row, col] = ind2sub([nr nc], sel);
+    n_sel = numel(sel);
 
     manifest = struct();
     manifest.conditioned_file = char(conditioned_file);
@@ -284,35 +342,60 @@ function manifest = mv_sample_pixels(conditioned_file, cam, n_pixels, varargin)
     manifest.sampling         = o.Sampling;
     manifest.stride           = stride_used;      % NaN unless sampling == 'grid'
     manifest.num_strata       = o.NumStrata;
+    manifest.snr_floor        = floor_snr;
+    manifest.snr_floor_mode   = floor_mode;
     manifest.snr_edges        = edges;
-    manifest.pixels           = [row col];        % n x 2, [row col]
+    manifest.n_target         = n_pixels;
+    manifest.candidates_factor = o.Candidates;
+    manifest.pixels           = [row col];        % ALL candidates, n x 2, [row col]
     manifest.linear_index     = sel;
     manifest.snr              = snr(sel);         % positional — order matches pixels
     manifest.stratum          = stratum;
+    manifest.tier             = tier;             % grid: 1 = base lattice; NaN otherwise
+    manifest.pool_status      = 'open';
+    manifest.active           = false(n_sel, 1);
+    manifest.lead_reviewer    = '';
+    manifest.lead_marks_file  = '';
+    manifest.lead_skipped     = zeros(0, 1);
+    manifest.pool_finalized   = '';
     manifest.created          = char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'));
 
     if isempty(o.Output)
         [pdir, base] = fileparts(conditioned_file);
         o.Output = fullfile(pdir, sprintf('%s_%s_manifest.mat', base, cam));
     end
-    save(char(o.Output), 'manifest');
-    manifest.manifest_file = char(o.Output);
+    o.Output = char(o.Output);
+    save(o.Output, 'manifest');
+    manifest.manifest_file = o.Output;
 
-    fprintf('Sampled %d pixels from %s (%s)\n', size(manifest.pixels, 1), cam, manifest.window_source);
-    fprintf('  window   : %.1f-%.1f ms (frames %d-%d), %d beat(s)\n', ...
+    fprintf('Drew %d candidate pixels from %s (%s) for a pool of %d\n', ...
+            n_sel, cam, manifest.window_source, n_pixels);
+    fprintf('  window    : %.1f-%.1f ms (frames %d-%d), %d beat(s)\n', ...
             win_ms(1), win_ms(2), win_fr(1), win_fr(2), o.NumBeats);
+    fprintf('  SNR floor : %.2f (%s) -> %d usable pixels\n', floor_snr, floor_mode, numel(lin));
     if strcmp(o.Sampling, 'grid')
-        fprintf('  sampling : grid, stride %d px (target was %d)\n', stride_used, n_pixels);
-        fprintf('  SNR      : %.1f-%.1f, post-stratified into %d strata\n', ...
-                min(manifest.snr), max(manifest.snr), o.NumStrata);
+        cnt = arrayfun(@(t) sum(tier == t), 1:max(tier));
+        fprintf('  sampling  : grid, stride %d px, tiers %s (target %d)\n', ...
+                stride_used, mat2str(cnt), n_pixels);
     else
-        fprintf('  sampling : SNR-stratified random (seed %d)\n', o.Seed);
-        fprintf('  SNR      : %.1f-%.1f across %d strata\n', ...
-                min(manifest.snr), max(manifest.snr), o.NumStrata);
+        fprintf('  sampling  : SNR-stratified random (seed %d), round-robin across %d strata\n', ...
+                o.Seed, o.NumStrata);
     end
-    fprintf('  manifest : %s\n', o.Output);
-    fprintf('\nGive this manifest to every reviewer. Do not re-run with a new seed\n');
-    fprintf('after marking has started.\n');
+    fprintf('  SNR range : %.1f-%.1f\n', min(manifest.snr), max(manifest.snr));
+    fprintf('  manifest  : %s\n', o.Output);
+
+    if o.Candidates > 1
+        fprintf('\nPool is OPEN. The lead reviewer builds it:\n');
+        fprintf('  mv_mark(''%s'', ''<initials>'', ''Lead'', true)\n', o.Output);
+        fprintf('Other reviewers can start once the pool is final. Do not re-run with a\n');
+        fprintf('new seed after marking has started.\n');
+    else
+        % The draw is the pool: finalise it now so downstream tools agree.
+        manifest = mv_finalize_pool(o.Output, 'Active', true(n_sel, 1), 'Quiet', true);
+        manifest.manifest_file = o.Output;
+        fprintf('\nPool is final (Candidates = 1). Give this manifest to every reviewer.\n');
+        fprintf('Do not re-run with a new seed after marking has started.\n');
+    end
 end
 
 
@@ -321,6 +404,46 @@ function require_field(d, f, src)
     if ~isfield(d, f) || isempty(d.(f))
         error('mv_sample_pixels:missingField', ...
               'Required field ''%s'' missing or empty in %s.', f, src);
+    end
+end
+
+
+function [floor_snr, mode] = resolve_floor(snr, spec)
+%RESOLVE_FLOOR  The SNR floor candidates must clear.
+%   'adaptive' reproduces create_snr_mask's per-recording rule: at least half
+%   as bright as typical tissue, never below 1.5.  A fixed floor does not
+%   transfer across preparations (a dim heart keeps only its brightest corner;
+%   a bright one admits border noise), which is why the pipeline uses this
+%   rule for the analysis mask and why the harness samples from the same one.
+    MIN_FLOOR = 1.5;
+    if ischar(spec) || isstring(spec)
+        base = isfinite(snr) & snr > MIN_FLOOR;
+        if any(base(:))
+            floor_snr = max(MIN_FLOOR, 0.5 * median(snr(base)));
+        else
+            floor_snr = MIN_FLOOR;
+        end
+        mode = 'adaptive';
+    else
+        floor_snr = double(spec);
+        mode = 'absolute';
+    end
+end
+
+
+function [sel, stratum] = interleave(lists)
+%INTERLEAVE  Round-robin merge of per-stratum candidate lists.
+    n_k = cellfun(@numel, lists);
+    sel = zeros(sum(n_k), 1); stratum = zeros(sum(n_k), 1);
+    pos = 0;
+    for j = 1:max(n_k)
+        for k = 1:numel(lists)
+            if j <= n_k(k)
+                pos = pos + 1;
+                sel(pos) = lists{k}(j);
+                stratum(pos) = k;
+            end
+        end
     end
 end
 
@@ -399,16 +522,21 @@ function [win_ms, src] = window_from_pacing(d, fs, nt, beat_index, num_beats)
 end
 
 
-function [sel, stride] = grid_sample(usable, n_target, stride_req)
-%GRID_SAMPLE  Regular lattice over the tissue, keeping only usable points.
+function [tiers, stride] = grid_tiers(usable, n_target, stride_req, n_cand)
+%GRID_TIERS  Lattice candidates in tiers of decreasing priority.
 %
-%   Returns linear indices, in raster order.  Points falling outside the tissue
-%   mask are dropped rather than nudged to a neighbour: moving them would bend
-%   the lattice and cost the even spacing that is the whole reason for it.
+%   Tier 1 is the lattice whose yield comes closest to n_target (or the
+%   requested stride).  Later tiers are the same lattice shifted by half a
+%   stride — both axes (cell centres), then rows only, then columns only —
+%   and are added until the candidate count reaches n_cand.  Because each tier
+%   sits between the points of the previous ones, a pool made of tier 1 plus
+%   any part of tier 2 is still evenly spread, which is what lets the lead
+%   stop at the target and still hand mv_compare something that interpolates
+%   into a map.
 %
-%   With a square lattice the achievable counts are quantized — 8x8, 9x9, 11x11
-%   — so n_target is a target, not a quota.  The caller reports what was
-%   actually drawn.
+%   Points falling outside the tissue mask are dropped rather than nudged to a
+%   neighbour: moving them would bend the lattice and cost the even spacing
+%   that is the whole reason for it.
 
     [rr, cc] = find(usable);
     r0 = min(rr); r1 = max(rr);
@@ -416,38 +544,58 @@ function [sel, stride] = grid_sample(usable, n_target, stride_req)
 
     if ~isempty(stride_req)
         stride = max(1, round(stride_req));
-        sel    = lattice(usable, r0, r1, c0, c1, stride);
-        return;
+    else
+        % Auto: start from the area estimate, then walk outward and keep
+        % whichever stride yields closest to the request.  Yield depends on the
+        % mask's shape, not just its area, so the estimate alone is not reliable.
+        est      = max(1, round(sqrt(nnz(usable) / max(n_target, 1))));
+        stride   = est;
+        best_err = inf;
+        for s = max(1, est - 4) : (est + 4)
+            err = abs(numel(lattice(usable, r0, r1, c0, c1, s, [0 0])) - n_target);
+            if err < best_err
+                best_err = err;
+                stride   = s;
+            end
+        end
     end
 
-    % Auto: start from the area estimate, then walk outward and keep whichever
-    % stride yields closest to the request.  Yield depends on the mask's shape,
-    % not just its area, so the closed-form estimate alone is not reliable.
-    est         = max(1, round(sqrt(nnz(usable) / max(n_target, 1))));
-    sel         = [];
-    stride      = est;
-    best_err    = inf;
-    for s = max(1, est - 4) : (est + 4)
-        cand = lattice(usable, r0, r1, c0, c1, s);
-        err  = abs(numel(cand) - n_target);
-        if err < best_err
-            best_err = err;
-            sel      = cand;
-            stride   = s;
-        end
+    h = floor(stride / 2);
+    offsets = {[0 0], [h h], [h 0], [0 h]};
+    if h == 0
+        offsets = offsets(1);            % stride 1: nothing lies between points
+    end
+
+    tiers = {};
+    taken = false(size(usable));
+    total = 0;
+    for t = 1:numel(offsets)
+        pts = lattice(usable, r0, r1, c0, c1, stride, offsets{t});
+        pts = pts(~taken(pts));
+        taken(pts) = true;
+        tiers{end+1} = pts;              %#ok<AGROW>
+        total = total + numel(pts);
+        if total >= n_cand; break; end
+    end
+    if total < n_cand && numel(tiers) > 1
+        warning('mv_sample_pixels:fewCandidates', ...
+                'Lattice tiers yield %d candidates; %d were requested.', total, n_cand);
     end
 end
 
 
-function sel = lattice(usable, r0, r1, c0, c1, stride)
+function sel = lattice(usable, r0, r1, c0, c1, stride, offset)
 %LATTICE  Grid points inside the tissue bounding box, centred on it.
 %   Centring spreads the leftover margin evenly instead of piling it against
 %   the bottom-right edge, which would bias coverage away from one corner.
+%   'offset' shifts the whole lattice by [drow dcol] pixels.
 
     rows = r0:stride:r1;
     cols = c0:stride:c1;
-    rows = rows + floor(((r1 - r0) - (rows(end) - rows(1))) / 2);
-    cols = cols + floor(((c1 - c0) - (cols(end) - cols(1))) / 2);
+    rows = rows + floor(((r1 - r0) - (rows(end) - rows(1))) / 2) + offset(1);
+    cols = cols + floor(((c1 - c0) - (cols(end) - cols(1))) / 2) + offset(2);
+    rows = rows(rows >= 1 & rows <= size(usable, 1));
+    cols = cols(cols >= 1 & cols <= size(usable, 2));
 
     [RR, CC] = ndgrid(rows, cols);
     lin = sub2ind(size(usable), RR(:), CC(:));

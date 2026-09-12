@@ -21,6 +21,11 @@ function tbl = mv_derive(marks_files, varargin)
 %
 %   Note on row/col: they are attached HERE, after marking is finished.  The
 %   marking tool withholds them on purpose (see mv_mark).
+%
+%   Slips are dropped, never corrected: in 'apd' mode a mark whose clicks are
+%   out of order (activation after the peak, repolarization before it) or
+%   whose APD is <= 0.  Both rules read the clicks only.  The dropped marks
+%   are listed in tbl.Properties.UserData.dropped (reviewer, pixel, reason).
 
     p = inputParser;
     p.addParameter('Output', '', @(v) ischar(v) || isstring(v));
@@ -32,6 +37,7 @@ function tbl = mv_derive(marks_files, varargin)
     end
 
     tbl = table();
+    dropped = drop_rows('', [], "");       % marks removed as slips, for reporting
     mode_seen = '';
 
     for f = 1:numel(marks_files)
@@ -63,7 +69,23 @@ function tbl = mv_derive(marks_files, varargin)
         M = load(m.manifest_file);
         manifest = M.manifest;
 
-        keep = find(m.done);
+        % Only the finalised POOL enters the study.  A lead reviewer's marks
+        % file may also hold accepted candidates beyond the target (kept out by
+        % mv_finalize_pool) — those are dropped here too.  Manifests from
+        % before candidate pools existed have every pixel active.
+        if isfield(manifest, 'pool_status')
+            if strcmp(manifest.pool_status, 'open')
+                error('mv_derive:poolOpen', ...
+                      ['The pool in %s is still OPEN. Finish the lead session (mv_mark with ' ...
+                       '''Lead'', true) or run mv_finalize_pool before deriving values.'], ...
+                      m.manifest_file);
+            end
+            active = logical(manifest.active(:));
+        else
+            active = true(numel(m.done), 1);
+        end
+
+        keep = find(m.done(:) & active);
         if isempty(keep)
             warning('mv_derive:noMarks', '%s has no completed pixels.', marks_files{f});
             continue;
@@ -85,6 +107,25 @@ function tbl = mv_derive(marks_files, varargin)
                 t.apd_ms    = m.t_rep_ms(keep) - m.t_act_ms(keep);
                 t.amplitude = m.v_peak(keep) - m.v_base(keep);
 
+                % Clicks out of order are slips too.  Activation lies on the
+                % upstroke, so it cannot follow the peak, and repolarization
+                % cannot precede it.  The usual form is an activation click on
+                % the DOWNSTROKE crossing of the 50% guide line: it gives a
+                % short but positive APD, so the check below misses it.  The
+                % rule reads only the clicks, never a CADENCE value, so it
+                % cannot favour the software.  Baseline is not ordered: late
+                % diastole is a legitimate place to click it.
+                t_peak = m.t_peak_ms(keep);
+                bad = t.act_ms > t_peak | m.t_rep_ms(keep) < t_peak;
+                if any(bad)
+                    warning('mv_derive:clickOrder', ...
+                            ['%s: dropping %d pixel(s) with clicks out of order (activation after ' ...
+                             'peak, or repolarization before peak): pixel %s.'], ...
+                            m.reviewer, sum(bad), mat2str(t.pixel(bad)'));
+                    dropped = [dropped; drop_rows(m.reviewer, t.pixel(bad), "click order")]; %#ok<AGROW>
+                    t(bad, :) = [];
+                end
+
                 % A negative APD means repolarization was marked before
                 % activation — a slip, not a measurement.  Drop it loudly
                 % rather than letting it widen the limits of agreement.
@@ -93,6 +134,7 @@ function tbl = mv_derive(marks_files, varargin)
                     warning('mv_derive:nonPositiveAPD', ...
                             '%s: dropping %d pixel(s) with APD <= 0 (repolarization marked before activation).', ...
                             m.reviewer, sum(bad));
+                    dropped = [dropped; drop_rows(m.reviewer, t.pixel(bad), "APD <= 0")]; %#ok<AGROW>
                     t(bad, :) = [];
                 end
 
@@ -131,10 +173,14 @@ function tbl = mv_derive(marks_files, varargin)
     % Carried through for mv_compare: it needs the camera to size the maps and
     % the manifest to recover the recording geometry.
     ud.nreviewers = numel(unique(tbl.reviewer));
+    ud.dropped    = dropped;
     tbl.Properties.UserData = ud;
 
     fprintf('Derived %d rows from %d reviewer file(s), mode ''%s''.\n', ...
             height(tbl), numel(marks_files), mode_seen);
+    if height(dropped) > 0
+        fprintf('  dropped   : %d mark(s) as slips (listed in UserData.dropped)\n', height(dropped));
+    end
     fprintf('  reviewers : %s\n', strjoin(cellstr(unique(tbl.reviewer)), ', '));
     fprintf('  pixels    : %d unique\n', numel(unique(tbl.pixel)));
     fprintf('  median time per pixel: %.1f s\n', median(tbl.seconds, 'omitnan'));
@@ -143,4 +189,11 @@ function tbl = mv_derive(marks_files, varargin)
         save(char(o.Output), 'tbl');
         fprintf('  saved     : %s\n', o.Output);
     end
+end
+
+
+function T = drop_rows(reviewer, pixels, reason)
+    n = numel(pixels);
+    T = table(repmat(string(reviewer), n, 1), pixels(:), repmat(string(reason), n, 1), ...
+              'VariableNames', {'reviewer', 'pixel', 'reason'});
 end

@@ -101,7 +101,7 @@ function mv_selftest(keep_dir)
     % ============================ 2. sample pixels ============================
     fprintf('2. mv_sample_pixels\n');
     manifest = mv_sample_pixels(cond_file, 'CAM1', 90, 'BeatIndex', 5, 'Seed', 11, ...
-                                'Source', 'raw');
+                                'Source', 'raw', 'Candidates', 1, 'SNRFloor', 0);
     mf = manifest.manifest_file;
     fprintf('\n');
 
@@ -109,7 +109,7 @@ function mv_selftest(keep_dir)
     % grid path has to work as well as the stratified one.  Checked at step 6.
     fprintf('2b. mv_sample_pixels (grid)\n');
     gman = mv_sample_pixels(cond_file, 'CAM1', 90, 'BeatIndex', 5, 'Seed', 11, ...
-                            'Sampling', 'grid', 'Source', 'raw', ...
+                            'Sampling', 'grid', 'Source', 'raw', 'Candidates', 1, 'SNRFloor', 0, ...
                             'Output', fullfile(root, 'grid_manifest.mat'));
     fprintf('\n');
 
@@ -132,6 +132,21 @@ function mv_selftest(keep_dir)
     % ============================== 4. derive =================================
     fprintf('4. mv_derive\n');
     tbl = mv_derive(marks_files);
+    check('simulated reviewers leave no slips', height(tbl.Properties.UserData.dropped) == 0, ...
+          sprintf('%d dropped', height(tbl.Properties.UserData.dropped)));
+
+    % A downstroke activation click (after the peak) gives a short positive
+    % APD that the APD <= 0 rule misses.  It must be dropped and listed.
+    S = load(marks_files{1}); marks = S.marks;
+    slip = find(marks.done, 1);
+    marks.t_act_ms(slip) = marks.t_peak_ms(slip) + 5;
+    slip_file = fullfile(root, 'sim_slip_R1_marks.mat');
+    save(slip_file, 'marks');
+    stbl = mv_derive(slip_file);
+    dr   = stbl.Properties.UserData.dropped;
+    check('click-order slip is dropped and listed', ...
+          ~any(stbl.pixel == slip) && height(dr) == 1 && dr.pixel(1) == slip && dr.reason(1) == "click order", ...
+          sprintf('pixel %d, %d dropped', slip, height(dr)));
     fprintf('\n');
 
     % ================= 5. a "CADENCE" map with a known bias ===================
@@ -264,6 +279,7 @@ function mv_selftest(keep_dir)
     fprintf('\n9. Ensemble-averaged arm\n');
     snr_map = amp ./ sigma;
     eman = mv_sample_pixels(cond_file, 'CAM1', 90, 'Seed', 11, 'Source', 'ensemble', ...
+                            'Candidates', 1, 'SNRFloor', 0, ...
                             'Output', fullfile(root, 'ens_manifest.mat'));
     emf = eman.manifest_file;
 
@@ -328,6 +344,113 @@ function mv_selftest(keep_dir)
     check('refuses when no ensemble average exists',   refused_noavg, ...
           'mv_sample_pixels:noEnsemble');
 
+    % ============ 11. candidate pool built by a lead reviewer ================
+    % The draw oversamples; the lead accepts or skips in manifest order until
+    % the target is reached; the accepted set becomes the pool everyone else
+    % marks.  Also exercises the adaptive SNR floor: this synthetic heart has
+    % three SNR bands (50, 16.7, 7.1), so the pipeline's rule — half the median
+    % tissue SNR, never below 1.5 — lands at 8.3 and excludes the dimmest band,
+    % exactly the pixels Feature Extraction would mask out.
+    fprintf('\n11. Lead-marker pool\n');
+    target = 60;
+    pman = mv_sample_pixels(cond_file, 'CAM1', target, 'Seed', 11, 'Source', 'ensemble', ...
+                            'Candidates', 2, 'NumStrata', 2, ...
+                            'Output', fullfile(root, 'pool_manifest.mat'));
+    pmf = pman.manifest_file;
+    exp_floor = max(1.5, 0.5 * median(snr_map(isfinite(snr_map) & snr_map > 1.5)));
+    check('adaptive SNR floor matches the pipeline rule', ...
+          abs(pman.snr_floor - exp_floor) < 1e-9 && all(pman.snr >= pman.snr_floor), ...
+          sprintf('floor %.2f, min candidate SNR %.1f', pman.snr_floor, min(pman.snr)));
+    ncand = size(pman.pixels, 1);
+    check('pool starts open with 2x candidates', ...
+          strcmp(pman.pool_status, 'open') && ncand == 2 * target && ~any(pman.active), ...
+          sprintf('%d candidates for target %d', ncand, pman.n_target));
+
+    % A non-lead reviewer's marks cannot enter an open pool.
+    rng(301, 'twister');
+    early = simulate_reviewer(pmf, 'R2', onset_avg, delay_ms, true_apd, snr_map, root, 'pool_early_');
+    refused_open = false;
+    try
+        mv_derive(early);
+    catch ME
+        refused_open = strcmp(ME.identifier, 'mv_derive:poolOpen');
+    end
+    check('refuses to derive from an open pool', refused_open, 'mv_derive:poolOpen');
+
+    % Lead: every 4th candidate is unmarkable; the session stops at the target.
+    skip = mod((1:ncand)', 4) == 0;
+    rng(300, 'twister');
+    lead_file = simulate_reviewer(pmf, 'LEAD', onset_avg, delay_ms, true_apd, snr_map, root, ...
+                                  'pool_', 'Skip', skip, 'Stop', target);
+    pman = mv_finalize_pool(pmf, 'Marks', lead_file);
+    % Expected pool: per stratum, the first quota markable candidates in
+    % manifest order.  Every 4th candidate falls in the same stratum under
+    % 2-way round-robin, so a global stop rule would have left that stratum
+    % short — the per-stratum quota is what keeps the pool balanced.
+    acc   = find(pman.active);
+    quota = target / pman.num_strata;
+    exp_acc = [];
+    for q = 1:pman.num_strata
+        cq = find(~skip & pman.stratum == q);
+        exp_acc = [exp_acc; cq(1:quota)]; %#ok<AGROW>
+    end
+    check('pool is the first markable candidates per stratum', ...
+          isequal(acc, sort(exp_acc)) && numel(acc) == target, ...
+          sprintf('%d active, %d candidates visited', numel(acc), pman.lead_visited));
+    check('skipped candidates are excluded and recorded', ...
+          ~any(pman.active & skip) && isequal(pman.lead_skipped, find(skip & (1:ncand)' <= pman.lead_visited)), ...
+          sprintf('%d skipped = %.0f%% of visited', numel(pman.lead_skipped), ...
+                  100 * numel(pman.lead_skipped) / pman.lead_visited));
+    cnt = accumarray(pman.stratum(acc), 1);
+    check('strata stay balanced at the stopping point', max(cnt) - min(cnt) <= 1, mat2str(cnt'));
+
+    % Everyone else marks the pool only.
+    others = cell(1, 2);
+    for q = 1:2
+        rng(310 + q, 'twister');
+        others{q} = simulate_reviewer(pmf, sprintf('R%d', q + 1), onset_avg, delay_ms, true_apd, ...
+                                      snr_map, root, 'pool_', 'ActiveOnly', true);
+    end
+    ptbl = mv_derive([{lead_file}, others]);
+    check('derived rows cover the pool only', ...
+          height(ptbl) == 3 * target && numel(unique(ptbl.pixel)) == target && all(pman.active(ptbl.pixel)), ...
+          sprintf('%d rows, %d pixels, 3 reviewers', height(ptbl), numel(unique(ptbl.pixel))));
+    refused_refinal = false;
+    try
+        mv_finalize_pool(pmf, 'Marks', lead_file);
+    catch ME
+        refused_refinal = strcmp(ME.identifier, 'mv_finalize_pool:alreadyFinal');
+    end
+    check('a final pool is not re-opened', refused_refinal, 'mv_finalize_pool:alreadyFinal');
+
+    % Grid: tiered candidates, tier 1 filled first, strata assigned on the pool.
+    gp = mv_sample_pixels(cond_file, 'CAM1', target, 'Seed', 11, 'Source', 'ensemble', ...
+                          'Sampling', 'grid', 'Candidates', 2, ...
+                          'Output', fullfile(root, 'pool_grid_manifest.mat'));
+    n1 = sum(gp.tier == 1);
+    check('grid candidates come in tiers, strata pending', ...
+          n1 >= 0.6 * target && n1 <= 1.5 * target && any(gp.tier == 2) && all(isnan(gp.stratum)), ...
+          sprintf('tier 1 %d, later tiers %d', n1, sum(gp.tier > 1)));
+    ncg   = size(gp.pixels, 1);
+    skipg = mod((1:ncg)', 5) == 0;
+    rng(320, 'twister');
+    glead = simulate_reviewer(gp.manifest_file, 'LEAD', onset_avg, delay_ms, true_apd, snr_map, ...
+                              root, 'pool_grid_', 'Skip', skipg, 'Stop', target);
+    gp = mv_finalize_pool(gp.manifest_file, 'Marks', glead);
+    ga = find(gp.active);
+    t1_ok = gp.tier == 1 & ~skipg;
+    if sum(t1_ok) >= target
+        fill_ok = ~any(gp.active & gp.tier > 1);
+    else
+        fill_ok = all(gp.active(t1_ok));
+    end
+    check('grid pool fills tier 1 before later tiers', fill_ok, ...
+          sprintf('%d from tier 1, %d from later tiers', ...
+                  sum(gp.active & gp.tier == 1), sum(gp.active & gp.tier > 1)));
+    check('grid strata assigned over the pool only', ...
+          isequal(sort(unique(gp.stratum(ga)))', 1:gp.num_strata) && all(isnan(gp.stratum(~gp.active))), ...
+          sprintf('%d strata over %d pixels', numel(unique(gp.stratum(ga))), numel(ga)));
+
     fprintf('\nAll checks passed.\n');
     if keep_dir
         fprintf('Scratch kept: %s\n', root);
@@ -357,12 +480,33 @@ function y = ap_waveform(t_ms, ta, apd80, amp)
 end
 
 
-function f = simulate_reviewer(manifest_file, reviewer, beat_t, delay_ms, true_apd, snr_map, root, tag)
-    if nargin < 8; tag = ''; end
+function f = simulate_reviewer(manifest_file, reviewer, beat_t, delay_ms, true_apd, snr_map, root, tag, varargin)
 %SIMULATE_REVIEWER  Write a marks file in mv_mark's format, without a human.
+%
+%   Name-value (after tag)
+%     'Skip'        logical over candidates: the reviewer finds these unmarkable
+%     'Stop'        stop once this many pixels are accepted (a lead session)
+%     'ActiveOnly'  mark only manifest.active pixels (an ordinary reviewer on
+%                   a finalised pool)
+    if nargin < 8 || isempty(tag); tag = ''; end
+    q = inputParser;
+    q.addParameter('Skip',       [],    @(v) isempty(v) || islogical(v));
+    q.addParameter('Stop',       Inf,   @(v) isnumeric(v) && isscalar(v));
+    q.addParameter('ActiveOnly', false, @islogical);
+    q.parse(varargin{:});
+    so = q.Results;
 
     M = load(manifest_file); manifest = M.manifest;
     n = size(manifest.pixels, 1);
+    if isempty(so.Skip); so.Skip = false(n, 1); end
+    if so.ActiveOnly; present = logical(manifest.active(:)); else; present = true(n, 1); end
+    % A lead session on a stratified draw fills a per-stratum quota (mv_mark).
+    if isfinite(so.Stop) && strcmp(manifest.sampling, 'stratified')
+        quota = floor(so.Stop / manifest.num_strata);
+        str   = manifest.stratum(:);
+    else
+        quota = Inf; str = ones(n, 1);
+    end
 
     marks = struct();
     marks.manifest_file    = manifest_file;
@@ -374,8 +518,9 @@ function f = simulate_reviewer(manifest_file, reviewer, beat_t, delay_ms, true_a
     marks.act_percent      = 50;
     marks.baseline_win_ms  = 5;
     marks.order_seed       = 0;
+    marks.lead             = isfinite(so.Stop);
     marks.order            = (1:n)';
-    marks.done             = true(n, 1);
+    marks.done             = false(n, 1);
     marks.skipped          = false(n, 1);
     marks.clicks           = repmat({zeros(0, 2)}, n, 1);
     marks.seconds          = 8 + 3 * rand(n, 1);
@@ -386,6 +531,13 @@ function f = simulate_reviewer(manifest_file, reviewer, beat_t, delay_ms, true_a
     marks.created          = char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'));
 
     for k = 1:n
+        if ~present(k); continue; end
+        if isfinite(quota) && sum(marks.done(str == str(k))) >= quota; continue; end
+        if so.Skip(k)
+            marks.skipped(k) = true;
+            continue;
+        end
+        marks.done(k) = true;
         r = manifest.pixels(k, 1); c = manifest.pixels(k, 2);
         ta  = beat_t + delay_ms(r, c);
 
@@ -395,17 +547,25 @@ function f = simulate_reviewer(manifest_file, reviewer, beat_t, delay_ms, true_a
 
         marks.t_act_ms(k)  = ta + jit * randn;
         marks.t_rep_ms(k)  = ta + true_apd(r, c) + jit * randn;
-        marks.t_peak_ms(k) = ta + 2;
+        % A reviewer clicks the peak after their own activation click, so the
+        % simulated peak follows it (mv_mark refuses the reverse order).  Only
+        % ordering depends on t_peak here; v_peak is fixed below.
+        marks.t_peak_ms(k) = max(ta + 2, marks.t_act_ms(k) + 0.5);
         marks.t_base_ms(k) = ta - 8;
         marks.v_peak(k)    = 1;
         marks.v_base(k)    = 0;
         marks.clicks{k}    = [marks.t_base_ms(k) 0; marks.t_peak_ms(k) 1; ...
                               marks.t_act_ms(k) 0.5; marks.t_rep_ms(k) 0.2];
+        if isfinite(quota)
+            if all(arrayfun(@(q) sum(marks.done(str == q)), 1:manifest.num_strata) >= quota); break; end
+        elseif sum(marks.done) >= so.Stop
+            break;
+        end
     end
 
     f = fullfile(root, sprintf('sim_%s%s_marks.mat', tag, reviewer));
     save(f, 'marks');
-    fprintf('   %s: %d pixels\n', reviewer, n);
+    fprintf('   %s: %d marked, %d skipped\n', reviewer, sum(marks.done), sum(marks.skipped));
 end
 
 
