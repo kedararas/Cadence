@@ -47,8 +47,30 @@ On 33 recordings (10 rat, 23 human):
   not to revert to fixed bands.
 - Reporting agreement as "% within 1%" is meaningless below ~5 Hz, because 1% of 1 Hz
   is finer than the 0.244 Hz bin. Report absolute error against the bin width instead.
-  Sub-bin parabolic interpolation of the spectral peak would cut the error by roughly
-  an order of magnitude and is a few lines.
+
+### What the full run found (2026-09-13, 104 recordings, 4 species, 1–10 Hz)
+
+- On the 1:1 population the engine picked the **correct bin in 75 of 76** recordings
+  (the 76th missed by half a bin, a tie). The −0.055 Hz bias was quantisation: the
+  cycle lengths in use sit on the low side of their nearest bins, and the expected bias
+  from that alone is −0.058 Hz.
+- **23 recordings, all human slices, reported DF = 0.732 Hz whatever the pacing rate**
+  (1–4.4 Hz). That is bin 3, the first bin above the 0.5 Hz floor: sub-band power
+  outranked the rhythm, the auto band locked onto it, and the result is not a
+  measurement. Some had been classed "2:1 block" — a 3.3 Hz recording reading 0.73 Hz is
+  not block. The engine now returns `spec.peakAtEdge` and the harness reports these as
+  **floor-pinned**, outside the capture classes. Root cause still to be looked at on
+  the spectra.
+- Six correct-bin results at 1.33 Hz were classed "other" because the two nearest bins
+  (1.221 and 1.465 Hz) are both more than 5% away. The tolerance is now
+  `max(5%, 0.55 bin)`.
+
+Three changes followed. `cardiacSpectralMetrics` refines the peak by a log-parabolic
+fit over the winning bin and its neighbours (`'PeakInterp'`, default on; RI/OI stay
+on the bin grid and are bit-identical). `mv_paced_df` flags floor-pinned results,
+uses the bin-aware tolerance, and takes a `'HeartMap'` CSV (`file, heart`) so the
+report counts **hearts** — the filename heuristic cannot see that three slices came
+from one heart. `mv_df_interp_test` covers all of it.
 
 ---
 
@@ -122,6 +144,7 @@ confusion, since they live in the same folder.
 | `mv_paced_df` | **once**, across every paced recording you own | dominant frequency, against the pacing hardware |
 | `mv_synth_cv`, `mv_cv_envelope`, `mv_lat_quantization` | **once** | conduction velocity, against a synthetic planar wave |
 | `mv_rise_test` | **once** (and after any edit to `extract_rise_time`) | rise-time algorithm, against analytic truth |
+| `mv_df_interp_test` | **once** (and after any edit to `cardiacSpectralMetrics`) | sub-bin DF refinement and the floor-pinned flag |
 | `mv_lat_test` | **once** (and after any edit to `compute_lat_50`) | activation-time algorithm, against analytic truth |
 | `mv_selftest` | **once**, before recruiting reviewers | the harness itself |
 

@@ -66,6 +66,19 @@ function [df, ri, oi, spec] = cardiacSpectralMetrics(x, fs, varargin)
 %
 %   Name / Value options
 %     'Band'            [fLo fHi] DF search band        default [] = auto
+%     'PeakInterp'      sub-bin peak refinement          default true
+%                       DF is refined by fitting a parabola through the
+%                       log-power of the peak bin and its two neighbours
+%                       (Hann-windowed peaks are close to parabolic in log
+%                       power).  The shift is clamped to +/-0.5 bin, so the
+%                       result can never leave the winning bin.  Removes the
+%                       quantisation error of fs/NFFT (0.24 Hz at 1 kHz with
+%                       NFFT 4096), which otherwise dominates the DF error at
+%                       paced rates: validated against the stimulus channel in
+%                       manual_validation_helper/mv_paced_df.  RI/OI windows
+%                       stay centred on the BIN peak, i.e. on the discrete
+%                       grid they are summed over, so they are unchanged.
+%                       false reproduces the bin-quantised DF.
 %                       Pass e.g. [3 12] (AF), [5 20] (large-animal VF) to
 %                       force a fixed search band instead of auto-detection.
 %     'PeakBW'          half-width (Hz) of peak window  default [] = adaptive
@@ -93,7 +106,12 @@ function [df, ri, oi, spec] = cardiacSpectralMetrics(x, fs, varargin)
 %     SPEC  struct with fields:
 %             .f         frequency vector (Hz)
 %             .pxx       PSD estimate (nfft/2+1 x 1)
-%             .df        same as DF
+%             .df        same as DF (sub-bin refined, see 'PeakInterp')
+%             .dfBin     the winning FFT bin (Hz) before refinement
+%             .peakAtEdge -1 / 0 / +1: bin peak at the lower edge / interior
+%                        / upper edge of the search band.  At the lower edge
+%                        of an AUTO band it means sub-band power (drift, a
+%                        pump) outranked the rhythm: not a measurement.
 %             .ri, .oi   same as RI, OI
 %             .peakBW    the (possibly adaptive) half-width used
 %             .harmonics .band .totalBand  the resolved settings used
@@ -141,6 +159,7 @@ function [df, ri, oi, spec] = cardiacSpectralMetrics(x, fs, varargin)
     p.addRequired('x',  @(v) isnumeric(v) && (isvector(v) || ndims(v) == 3));
     p.addRequired('fs', @(v) isnumeric(v) && isscalar(v) && v > 0);
     p.addParameter('Band',           [],   @(v) isempty(v) || (numel(v)==2 && v(2)>v(1)));
+    p.addParameter('PeakInterp',     true, @(v) islogical(v) || isnumeric(v));
     p.addParameter('PeakBW',         [],   @(v) isempty(v) || (isscalar(v) && v > 0));
     p.addParameter('Harmonics',      4,    @(v) v >= 1 && v == round(v));
     p.addParameter('NFFT',           [],   @(v) isempty(v) || (v > 0 && v == round(v)));
@@ -306,7 +325,10 @@ function [df, ri, oi, spec] = compute1D(x, fs, o, flags)
     fBand   = f(inBand);
     pxxBand = pxx(inBand);
     [~, iPk] = max(pxxBand);
-    df = fBand(iPk);
+    dfBin = fBand(iPk);
+    iFull = find(inBand, 1) + iPk - 1;                 % index into the full spectrum
+    df    = dfBin + peakShift(pxx, iFull, o) * (f(2) - f(1));
+    if iPk == 1, edge = -1; elseif iPk == numel(pxxBand), edge = 1; else, edge = 0; end
 
     % --- sanity guards -------------------------------------------------------
     % These are about TRUSTWORTHINESS, deliberately kept separate from the band
@@ -320,7 +342,7 @@ function [df, ri, oi, spec] = compute1D(x, fs, o, flags)
         warning('cardiacSpectralMetrics:peakAtBandEdge', ...
             ['DF %.3g Hz sits at the edge of the auto search band [%.3g %.3g] Hz — ' ...
              'the true peak may lie outside it. Pass an explicit ''Band'' to check.'], ...
-            df, band(1), band(2));
+            dfBin, band(1), band(2));
     end
     nCycles = df * numel(x) / fs;
     if nCycles < 3
@@ -329,15 +351,17 @@ function [df, ri, oi, spec] = compute1D(x, fs, o, flags)
              'estimate. Use a longer recording.'], df, numel(x) / fs, nCycles);
     end
 
-    % --- widths + RI/OI ---
-    [bw, totBand] = resolveWidths(df, f, o, flags);
-    [ri, oi]      = regOrgIndices(f, pxx, df, bw, totBand, o.Harmonics);
+    % --- widths + RI/OI (centred on the bin peak: see 'PeakInterp' above) ---
+    [bw, totBand] = resolveWidths(dfBin, f, o, flags);
+    [ri, oi]      = regOrgIndices(f, pxx, dfBin, bw, totBand, o.Harmonics);
 
     % --- pack struct ---
     spec = struct( ...
         'f',            f, ...
         'pxx',          pxx, ...
         'df',           df, ...
+        'dfBin',        dfBin, ...
+        'peakAtEdge',   edge, ...
         'ri',           ri, ...
         'oi',           oi, ...
         'peakBW',       bw, ...
@@ -392,8 +416,17 @@ function [df_map, ri_map, oi_map, spec] = compute3D(x, fs, o, flags)
 
     % --- dominant frequency -- vectorised max across all pixels at once ---
     [~, iPk] = max(pxx(inBand, :), [], 1);     % 1 x num_pixels
-    df_vec   = fBand(iPk);                      % 1 x num_pixels
+    dfBin_vec = reshape(fBand(iPk), 1, []);     % 1 x num_pixels (fBand is a column)
+    iFull     = find(inBand, 1) + iPk - 1;
+    shift     = zeros(1, num_pixels);
+    for vi = find(valid_mask)
+        shift(vi) = peakShift(pxx(:, vi), iFull(vi), o);
+    end
+    df_vec = dfBin_vec + shift * (f(2) - f(1));
     df_vec(~valid_mask) = NaN;
+    dfBin_vec(~valid_mask) = NaN;
+    edge_vec = double(iPk == 1) * -1 + double(iPk == numel(fBand));   % -1 / 0 / +1 per pixel
+    edge_vec(~valid_mask) = NaN;
 
     % --- RI and OI -- per-pixel (df sets the windows; loop is cheap vs pwelch) ---
     ri_vec = NaN(1, num_pixels);
@@ -401,7 +434,7 @@ function [df_map, ri_map, oi_map, spec] = compute3D(x, fs, o, flags)
     valid_idx = find(valid_mask);
     for vi = 1:numel(valid_idx)
         px = valid_idx(vi);
-        df_px = df_vec(px);
+        df_px = dfBin_vec(px);                  % bin peak: RI/OI live on the grid
         [bw, totBand] = resolveWidths(df_px, f, o, flags);
         [ri_vec(px), oi_vec(px)] = ...
             regOrgIndices(f, pxx(:, px), df_px, bw, totBand, o.Harmonics);
@@ -409,6 +442,8 @@ function [df_map, ri_map, oi_map, spec] = compute3D(x, fs, o, flags)
 
     % --- reshape vectors back to spatial maps ---
     df_map = reshape(df_vec, num_rows, num_cols);
+    dfBin_map = reshape(dfBin_vec, num_rows, num_cols);
+    edge_map  = reshape(edge_vec, num_rows, num_cols);
     ri_map = reshape(ri_vec, num_rows, num_cols);
     oi_map = reshape(oi_vec, num_rows, num_cols);
 
@@ -419,6 +454,8 @@ function [df_map, ri_map, oi_map, spec] = compute3D(x, fs, o, flags)
         'f',            f, ...
         'pxx',          reshape(pxx, nF, num_rows, num_cols), ...
         'df',           df_map, ...
+        'dfBin',        dfBin_map, ...
+        'peakAtEdge',   edge_map, ...
         'ri',           ri_map, ...
         'oi',           oi_map, ...
         'peakBW',       peakBW_out, ...
@@ -451,6 +488,24 @@ end
 
 
 % ========================================================================
+function d = peakShift(pxx, i, o)
+%PEAKSHIFT  Sub-bin offset of a spectral peak, in bins, by log-parabolic fit.
+%   Three-point parabola through log(pxx) at bins i-1, i, i+1.  Zero when
+%   refinement is off, the peak is at either end of the spectrum, or the
+%   neighbours are not both finite and positive.  Clamped to [-0.5, 0.5]: the
+%   winning bin stays the winning bin.
+    d = 0;
+    if ~o.PeakInterp || i <= 1 || i >= numel(pxx), return; end
+    a = pxx(i-1); b = pxx(i); c = pxx(i+1);
+    if ~(isfinite(a) && isfinite(b) && isfinite(c)) || a <= 0 || b <= 0 || c <= 0, return; end
+    la = log(a); lb = log(b); lc = log(c);
+    den = la - 2*lb + lc;
+    if den >= 0, return; end                    % not a maximum in log power
+    d = 0.5 * (la - lc) / den;
+    d = max(-0.5, min(0.5, d));
+end
+
+
 function xProc = applyPreproc(x, fs, method)
 % Apply preprocessing to x. Works for both column vectors (1-D) and
 % matrices (one signal per column, used by the 3-D path).
