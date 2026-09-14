@@ -336,7 +336,7 @@ function sc = tissue_mean(A, snr, fs)
 
     % The engine, exactly as the app calls it: masked stack, 3-D path.
     Am = A; Pm = reshape(Am, [], nt); Pm(~tissue, :) = NaN; Am = reshape(Pm, size(A));
-    ws = warning('off', 'all'); c = onCleanup(@() warning(ws)); %#ok<NASGU>
+    ws = warning('off', 'all'); c = onCleanup(@() warning(ws));
     [sc.df_map, sc.ri_map, sc.oi_map, sp] = cardiacSpectralMetrics(Am, fs);
     sc.dfbin_map = sp.dfBin;
     sc.edge_map  = sp.peakAtEdge;
