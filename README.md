@@ -172,7 +172,7 @@ this software ... THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND
 
 ## Third‑party components
 
-CADENCE bundles a few small, permissively licensed helper functions from the MATLAB File Exchange (`real2rgb`, `rescale_sat`, `rgb`, `DiscreteFrechetDist`, `contourcs`). Each remains under its original (BSD/MIT‑style) license, which is compatible with CADENCE’s AGPL‑3.0 distribution. See [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) for the full inventory, authors, and licenses.
+CADENCE bundles a few small, permissively licensed helper functions from the MATLAB File Exchange (`real2rgb`, `rescale_sat`, `rgb`, `DiscreteFrechetDist`, `contourcs`). Each remains under its original (BSD/MIT‑style) license, which is compatible with CADENCE’s MIT license. See [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) for the full inventory, authors, and licenses.
 
 The bundled **MATLAB Runtime** is © The MathWorks, Inc., redistributed under MathWorks’ terms; it is a separately installed runtime required only to execute the compiled application.
 
