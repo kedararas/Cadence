@@ -56,6 +56,7 @@ feature_extraction_helper/Ui/
 feature_extraction_helper/export_alternans_panels.m
 feature_extraction_helper/export_scaled_panel_group.m
 feature_extraction_helper/make_manuscript_alternans_panels.m
+signal_conditioning_helper/figure2.m
 
 # ---- reference PDFs (copyrighted; not for redistribution) ----
 docs/literature/
