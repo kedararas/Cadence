@@ -1,0 +1,33 @@
+{
+  "title": "CADENCE: a toolkit for cardiac optical-mapping signal processing and analysis",
+  "description": "<p>CADENCE is an end-to-end toolkit for processing and analyzing cardiac optical-mapping recordings (transmembrane voltage and intracellular calcium): data conversion, signal conditioning, feature extraction (activation, APD/repolarization, conduction velocity, calcium kinetics, alternans, and arrhythmia/rotor dynamics), and visualization/analysis.</p><p>Distributed as a standalone macOS application requiring no MATLAB license, plus the full MATLAB App Designer source. This release accompanies the CADENCE manuscript.</p>",
+  "upload_type": "software",
+  "license": "MIT",
+  "version": "1.0.0",
+  "creators": [
+    {
+      "name": "Aras, Kedar",
+      "affiliation": "ARAS Lab, University at Buffalo, State University of New York",
+      "orcid": "0000-0002-9898-1462"
+    }
+  ],
+  "keywords": [
+    "cardiac electrophysiology",
+    "optical mapping",
+    "action potential",
+    "calcium transient",
+    "conduction velocity",
+    "alternans",
+    "rotor dynamics",
+    "arrhythmia",
+    "MATLAB"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/kedararas/Cadence",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ],
+  "access_right": "open"
+}
