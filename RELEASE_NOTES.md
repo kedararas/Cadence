@@ -5,11 +5,21 @@ when you publish, and attach the platform installer/DMG as a release asset.
 
 ---
 
-## v1.0.0 — macOS (Apple Silicon + Intel)
+## v1.0.0 — macOS (Apple Silicon)
 
-The release accompanying the CADENCE manuscript. Same installation as v2026.1
-(below): install the free **MATLAB Runtime R2025b** matching your Mac, open the
-DMG, drag **CADENCE** to Applications. Both builds are code-signed and notarized.
+The release accompanying the CADENCE manuscript.
+
+**Install**
+1. Install the free **MATLAB Runtime R2025b** — choose release **R2025b**,
+   variant **macOS Apple silicon**:
+   https://www.mathworks.com/products/compiler/matlab-runtime.html
+2. Open `CADENCE.dmg` and drag **CADENCE** to Applications.
+3. Launch CADENCE.
+
+The build is code-signed and notarized by Apple, so it opens normally.
+
+*Apple Silicon only. Apple has discontinued Intel Mac support; an Intel build
+can be produced on request — open an issue if you need one.*
 
 **Analysis changes since v2026.1** — metrics extracted with earlier versions are
 not directly comparable; re-extract before combining results across versions.

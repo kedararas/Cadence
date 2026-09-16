@@ -97,8 +97,8 @@ The modules are designed to be run in order; each writes a `.mat` file consumed 
 CADENCE’s requirements are driven by data size — recordings are large and the conditioning/ensemble steps hold multiple in‑memory copies, so **RAM is the dominant constraint**. A discrete GPU is **not** required or used.
 
 ### Software
-- **MATLAB Runtime R2025b (free, no license).** This is the only mandatory install and **must match the build version (R2025b)** and your Mac's architecture (separate **Apple Silicon** and **Intel** builds are released).
-- **Operating system (64‑bit):** Windows 10/11, macOS (Apple Silicon and Intel are **separate builds** — install the one matching your Mac), or a Linux distribution supported by the build’s MATLAB release.
+- **MATLAB Runtime R2025b (free, no license).** This is the only mandatory install and **must match the build version (R2025b)** and your Mac's architecture — the released build is **Apple Silicon**.
+- **Operating system (64‑bit):** macOS on Apple Silicon (the released build), or Windows 10/11 and Linux once those builds are published.
 - Administrator rights for the one‑time Runtime install; ~2–4 GB free disk for the Runtime.
 - **No MATLAB license and no toolboxes are required by the end user** — all dependencies are bundled.
 
@@ -116,19 +116,17 @@ An SSD is strongly recommended — loading hundreds‑of‑MB recordings from a 
 
 ## Installation
 
-CADENCE requires the free **MATLAB Runtime R2025b** — no MATLAB license needed. On the [MathWorks download page](https://www.mathworks.com/products/compiler/matlab-runtime.html), choose release **R2025b** and the variant matching your Mac (**macOS Apple silicon** or **macOS Intel**).
+CADENCE requires the free **MATLAB Runtime R2025b** — no MATLAB license needed. On the [MathWorks download page](https://www.mathworks.com/products/compiler/matlab-runtime.html), choose release **R2025b**, variant **macOS Apple silicon**.
 
-### macOS (Apple Silicon or Intel)
-1. Install **MATLAB Runtime R2025b** matching your Mac (link above) — **macOS Apple silicon** *or* **macOS Intel**.
-2. Download the DMG for your Mac, open it, and drag **CADENCE** to your Applications folder:
-   - **Apple Silicon** (M1/M2/M3/M4) → `CADENCE-AppleSilicon.dmg`
-   - **Intel** → `CADENCE-Intel.dmg` (also runs on Apple Silicon via Rosetta 2)
+### macOS (Apple Silicon)
+1. Install **MATLAB Runtime R2025b** (link above) — variant **macOS Apple silicon**.
+2. Download `CADENCE.dmg`, open it, and drag **CADENCE** to your Applications folder.
 3. Launch **CADENCE** and begin at the Data Conversion module.
 
 > The macOS build is **code-signed and notarized** by Apple, so it opens normally — no Gatekeeper warning.
 
 ### Windows / Linux
-Coming soon — builds for these platforms are produced separately. The installer will bundle/download the matching MATLAB Runtime.
+Coming soon — builds for these platforms are produced separately. The installer will bundle/download the matching MATLAB Runtime. Apple has discontinued Intel Mac support, so no Intel build is published; one can be produced on request.
 
 ## Quick start
 

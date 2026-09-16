@@ -16,16 +16,20 @@ required** to run it.
 RAM is the main constraint (recordings are large and conditioning holds several
 in-memory copies). An SSD is strongly recommended.
 
-## macOS
+## macOS (Apple Silicon)
 
-1. Open `CADENCE_Installer.dmg` and run the installer inside.
-2. It installs CADENCE and the **MATLAB Runtime** (free, no license).
+1. Install the free **MATLAB Runtime R2025b** — on the
+   [MathWorks download page](https://www.mathworks.com/products/compiler/matlab-runtime.html)
+   choose release **R2025b**, variant **macOS Apple silicon**. No MATLAB license
+   is needed.
+2. Open `CADENCE.dmg` and drag **CADENCE** to your Applications folder.
 3. Launch **CADENCE**.
 
-!!! warning "Gatekeeper"
-    If the app is not yet notarized, macOS may show "unidentified developer."
-    Right-click the app → **Open** → **Open** (once). TODO: remove this note once
-    the build is notarized.
+The build is code-signed and notarized by Apple, so it opens normally — no
+Gatekeeper warning.
+
+Apple has discontinued Intel Mac support, so no Intel build is published. One
+can be produced on request.
 
 ## Windows
 
