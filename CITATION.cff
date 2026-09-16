@@ -29,11 +29,13 @@ keywords:
   - rotor dynamics
   - MATLAB
 # --- Software archive DOI (the CODE itself) ---
-doi: "10.5281/zenodo.17150892"
-identifiers:
-  - type: doi
-    value: "10.5281/zenodo.17150892"
-    description: "Archived software release (v1.0.0)"
+# If you archive a release on Zenodo, it mints a version DOI for the software.
+# Add it here so the repository/version is citable on its own:
+# doi: "10.5281/zenodo.XXXXXXX"
+# identifiers:
+#   - type: doi
+#     value: "10.5281/zenodo.XXXXXXX"
+#     description: "Archived software release"
 
 # --- Preferred citation (the PAPER) ---
 # Once the manuscript is published, fill this in. CFF treats this as the

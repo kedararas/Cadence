@@ -152,12 +152,10 @@ Requires **MATLAB** plus these toolboxes:
 
 ## Citing CADENCE
 
-If you use CADENCE in your research, please cite the archived release:
-
-**DOI: [10.5281/zenodo.17150892](https://doi.org/10.5281/zenodo.17150892)**
-
-Citation metadata is in [`CITATION.cff`](CITATION.cff) — on GitHub this powers the
-**“Cite this repository”** button (APA/BibTeX export).
+If you use CADENCE in your research, please cite it. Citation metadata is in
+[`CITATION.cff`](CITATION.cff) — on GitHub this powers the **“Cite this repository”**
+button (APA/BibTeX export). Once you archive a release (e.g. on Zenodo) and obtain a
+DOI, add it to `CITATION.cff` and reference it here.
 
 ## License
 
