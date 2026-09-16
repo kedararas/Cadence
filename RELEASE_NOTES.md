@@ -5,6 +5,40 @@ when you publish, and attach the platform installer/DMG as a release asset.
 
 ---
 
+## v1.0.0 — macOS (Apple Silicon + Intel)
+
+The release accompanying the CADENCE manuscript. Same installation as v2026.1
+(below): install the free **MATLAB Runtime R2025b** matching your Mac, open the
+DMG, drag **CADENCE** to Applications. Both builds are code-signed and notarized.
+
+**Analysis changes since v2026.1** — metrics extracted with earlier versions are
+not directly comparable; re-extract before combining results across versions.
+
+- **Conduction velocity:** the polyfit engine is now the default (lowest error
+  across every geometry in the synthetic validation); interior-margin, support
+  and planarity guards applied to the longitudinal/transverse fit.
+- **Activation time:** sub-frame 50% upstroke (LAT50) used consistently as the
+  duration reference, with guards against negative and out-of-window crossings.
+  APD, repolarization, CaT duration and Ca decay shorten ~5 ms relative to
+  earlier versions.
+- **Calcium kinetics:** tau refit in the untransformed domain with a baseline
+  term; Vm–Ca delay now requires a voltage and a calcium camera and reports a
+  signed delay; rise time rewritten.
+- **Alternans:** sub-frame repolarization/decay crossings in the 3-D paths,
+  trough-referenced calcium baseline, and a corrected APD-gradient border in the
+  arrhythmia substrate.
+- **Arrhythmia dynamics:** sign-aware phase-singularity de-duplication with an
+  opposite-sign guard; spectral DF refined to sub-bin precision.
+- **Feature Extraction:** raw-referenced alternans, headless batch runner.
+- **Interface:** representative-signal axis labelled Time (ms); calcium traces
+  drawn black dashed.
+
+**Validation.** Metrics were compared against blinded manual marking by three
+observers (2382 APD80 pairs, 15 hearts) and, for dominant frequency, against the
+pacing stimulus channel (88 paced recordings, 83 hearts).
+
+---
+
 ## v2026.1 — macOS (Apple Silicon + Intel)
 
 CADENCE is an end-to-end toolkit for processing and analyzing cardiac

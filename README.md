@@ -97,7 +97,7 @@ The modules are designed to be run in order; each writes a `.mat` file consumed 
 CADENCE’s requirements are driven by data size — recordings are large and the conditioning/ensemble steps hold multiple in‑memory copies, so **RAM is the dominant constraint**. A discrete GPU is **not** required or used.
 
 ### Software
-- **MATLAB Runtime R2025b (free, no license).** This is the only mandatory install and **must match the build version (R2025b)** and your Mac's architecture (the current build is **Apple Silicon**).
+- **MATLAB Runtime R2025b (free, no license).** This is the only mandatory install and **must match the build version (R2025b)** and your Mac's architecture (separate **Apple Silicon** and **Intel** builds are released).
 - **Operating system (64‑bit):** Windows 10/11, macOS (Apple Silicon and Intel are **separate builds** — install the one matching your Mac), or a Linux distribution supported by the build’s MATLAB release.
 - Administrator rights for the one‑time Runtime install; ~2–4 GB free disk for the Runtime.
 - **No MATLAB license and no toolboxes are required by the end user** — all dependencies are bundled.
