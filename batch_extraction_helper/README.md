@@ -234,9 +234,10 @@ Every value is the median over finite pixels of the masked map for that
 recording. Definitions are in `cadence_metric_labels.m` and on the README
 sheet of the workbook. Conduction velocity is pooled over the tissue interior
 (8 px erosion), the same gate Signal Analysis and the Conduction Velocity
-module apply; two CV columns are given, the inverse-gradient map saved by
-Feature Extraction and a polyfit-engine recomputation (the CV module's
-default engine).
+module apply; two CV columns are given. Both are the inverse-gradient method
+(v = ∇T/‖∇T‖²) and differ only in how ∇T is estimated: the map saved by Feature
+Extraction uses finite differences, the recomputation uses a local polynomial
+gradient fit (polyfit), the CV module's default estimator.
 
 Column labels reused from the previous Python summary (`extract_medians.py`)
 are unchanged: Activation time (V) [ms], APD (V) [ms], Repolarization time (V)

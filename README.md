@@ -77,7 +77,7 @@ The modules are designed to be run in order; each writes a `.mat` file consumed 
 
 **1. Data Conversion** — Imports raw SciMedia `.gsd/.gsh` and TIFF stacks into the CADENCE `cmos_all_data` format: per‑camera image stacks, preview images, acquisition frame rate, and the analog/pacing channel. Supports batch processing of a directory.
 
-**2. Signal Conditioning** — SNR mapping, baseline‑drift removal, SVD spatial denoising, spatial binning, temporal (Savitzky–Golay) filtering, motion‑artifact correction, normalization, ensemble averaging, signal‑inversion detection/correction, and SNR masking. Supports batch processing of a directory.
+**2. Signal Conditioning** — SNR mapping, baseline‑drift removal, SVD spatial denoising, spatial binning, temporal filtering (Butterworth low‑pass by default; Savitzky–Golay optional), motion‑artifact correction, normalization, ensemble averaging, signal‑inversion detection/correction, and SNR masking. Supports batch processing of a directory.
 
 **3. Feature Extraction** —
 - *Voltage (Vm):* local activation time (LAT), repolarization time, action‑potential duration (APD), upstroke rise time, conduction velocity, and voltage–calcium activation delay.

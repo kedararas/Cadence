@@ -24,9 +24,10 @@ can be produced on request — open an issue if you need one.*
 **Analysis changes since v2026.1** — metrics extracted with earlier versions are
 not directly comparable; re-extract before combining results across versions.
 
-- **Conduction velocity:** the polyfit engine is now the default (lowest error
-  across every geometry in the synthetic validation); interior-margin, support
-  and planarity guards applied to the longitudinal/transverse fit.
+- **Conduction velocity:** the local polynomial gradient fit (polyfit) is now the
+  default gradient estimator for the inverse-gradient method (lowest error across
+  every geometry in the synthetic validation); interior-margin, support and
+  planarity guards applied to the longitudinal/transverse fit.
 - **Activation time:** sub-frame 50% upstroke (LAT50) used consistently as the
   duration reference, with guards against negative and out-of-window crossings.
   APD, repolarization, CaT duration and Ca decay shorten ~5 ms relative to

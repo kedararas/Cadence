@@ -24,7 +24,7 @@ Applied in this order; each is optional unless noted.
 | Drift correction | Removes baseline wander |
 | SVD denoising | Low-rank spatial denoising (falls back to binning per camera if needed) |
 | Spatial binning | N×N box filter (3/5/7/9) to raise SNR |
-| Temporal filtering | Savitzky–Golay low-pass at the chosen cutoff |
+| Temporal filtering | Butterworth low-pass at the chosen cutoff (Savitzky–Golay optional) |
 | Motion correction | Registers frames to a reference beat |
 | Normalization | Scales each pixel's signal to a common range |
 | Ensemble averaging | Builds a representative beat (`CAM<n>_average`) |
