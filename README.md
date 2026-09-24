@@ -43,6 +43,8 @@ mkdocs gh-deploy                   # publish to GitHub Pages
 
 This README is the short reference; the docs site is the living manual, and the scientific methods/validation are in the publication (see [Citing CADENCE](#citing-cadence)).
 
+The validation study tooling — blinded manual marking and the automated dominant-frequency check against the pacing channel — lives in [`manual_validation_helper/`](manual_validation_helper/README.md), which documents both tracks and their ground truths.
+
 ## Modules & workflow
 
 The modules are designed to be run in order; each writes a `.mat` file consumed by the next.
