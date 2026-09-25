@@ -28,6 +28,9 @@ function [d, status] = cadence_extract_features(d, opts)
 %       local CV at FOV mm), CAM2 = calcium (V-Ca delay, CaTD80, decay 80%,
 %       rise 20-90%, tau 90%->20%), AP alternans on CAM1, Ca alternans on
 %       CAM2 with the combined arrhythmia substrate, DF/RI/OI on CAM1.
+%       With VoltageCams / CalciumCams, every listed camera is extracted and
+%       the combined substrate pairs the FIRST voltage with the FIRST
+%       calcium camera (stored on that calcium camera).
 %     * representative pixel = image centre (what the app uses when the
 %       user has not right-clicked).
 %
@@ -36,6 +39,13 @@ function [d, status] = cadence_extract_features(d, opts)
 %                     lab's existing *-metrics files)
 %     VoltageCams     cameras treated as voltage   (default 1)
 %     CalciumCams     cameras treated as calcium   (default 2, if present)
+%                     Set both explicitly for anything but a CAM1-voltage /
+%                     CAM2-calcium rig: a four-camera voltage rig left on the
+%                     defaults gets calcium metrics from CAM2 and nothing from
+%                     CAM3/CAM4.  The resolved roles are saved in the returned
+%                     struct as camera_roles (voltage, calcium, source), which
+%                     cadence_recording_medians reads, and a WARNING is logged
+%                     whenever they were assumed rather than specified.
 %     APD_pct         APD level, %                 (default 80)
 %     Rep_pct         repolarization level, %      (default 80)
 %     APRise          [lo hi] AP rise levels, %    (default [20 90])
@@ -65,6 +75,25 @@ function [d, status] = cadence_extract_features(d, opts)
     if nargin < 2 || isempty(opts), opts = struct(); end
     P = resolve_options(d, opts);
     logf = P.Log;
+
+    % Which camera carries which signal.  Saved with the metrics so nothing
+    % downstream has to assume CAM1 = voltage, CAM2 = calcium; when the caller
+    % did not say, that legacy assumption still applies, but loudly.
+    explicit = isfield(opts, 'VoltageCams') || isfield(opts, 'CalciumCams');
+    if explicit, src = 'specified'; else, src = 'assumed (CAM1 voltage, CAM2 calcium)'; end
+    d.camera_roles = struct('voltage', P.VoltageCams, 'calcium', P.CalciumCams, 'source', src);
+    if explicit
+        logf(sprintf('Camera roles: voltage %s, calcium %s.', cams_str(P.VoltageCams), cams_str(P.CalciumCams)));
+    else
+        logf(sprintf(['WARNING: camera roles not specified; assuming voltage %s, calcium %s. ' ...
+                      'Set ExtractOpts.VoltageCams / CalciumCams for other camera layouts.'], ...
+                     cams_str(P.VoltageCams), cams_str(P.CalciumCams)));
+    end
+    have = find(arrayfun(@(i) isfield(d, sprintf('CAM%d', i)) && ~isempty(d.(sprintf('CAM%d', i))), 1:double(d.num_files)));
+    unused = setdiff(have, [P.VoltageCams(:); P.CalciumCams(:)]');
+    if ~isempty(unused)
+        logf(sprintf('Camera(s) %s present but assigned no signal type: not extracted.', cams_str(unused)));
+    end
 
     status = struct('features', {{}}, 'errors', {{}}, 'timing', struct(), 'settings', P);
 
@@ -191,6 +220,11 @@ function P = resolve_options(d, opts)
 
     if isempty(P.ComplexityCams), P.ComplexityCams = P.VoltageCams; end
     P.ComplexityCams = P.ComplexityCams(arrayfun(present, P.ComplexityCams));
+end
+
+
+function s = cams_str(c)
+    if isempty(c), s = 'none'; else, s = strjoin(arrayfun(@(i) sprintf('CAM%d', i), c(:)', 'UniformOutput', false), ', '); end
 end
 
 
@@ -783,12 +817,12 @@ function em = stage_alternans(d, P)
     for i = P.VoltageCams
         a = extract_v_alternans(d, P, beat_frames, i);
         em.alternans_data(i,1:6) = a;
-        voltage_alternans = i;
+        if voltage_alternans == 0, voltage_alternans = i; end   % first: the camera the summary reads
     end
     for i = P.CalciumCams
         a = extract_c_alternans(d, P, beat_frames, i);
         em.alternans_data(i,1:6) = a;
-        calcium_alternans = i;
+        if calcium_alternans == 0, calcium_alternans = i; end
     end
 
     if voltage_alternans > 0 && calcium_alternans > 0

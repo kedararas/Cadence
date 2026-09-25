@@ -7,6 +7,10 @@ function cadence_build_summary(T, out_xlsx, varargin)
 %   Sheets
 %     Recordings     one row per recording, grouped by ZT then experiment
 %                    (rat), then condition, then pacing CL (longest first)
+%     Per camera     one row per camera of each recording (only written when
+%                    'PerCamera' is given and some recording has more than one
+%                    camera of the same signal type, e.g. a four-camera
+%                    voltage rig); same order as Recordings, then camera
 %     By experiment  one row per ZT x experiment x condition x CL: median of
 %                    the recordings at that CL (usually one) + N
 %     By ZT          one row per ZT x condition x CL: median across the
@@ -26,11 +30,13 @@ function cadence_build_summary(T, out_xlsx, varargin)
 %   CSV copies of the tables are written next to the workbook.
 %
 %   Options: 'RefCL' (default 150) reference CL for the cosinor of steady-state
-%   metrics; 'OnsetOpts' struct passed to cadence_alternans_onset.
+%   metrics; 'OnsetOpts' struct passed to cadence_alternans_onset;
+%   'PerCamera' table (or CSV) from cadence_camera_medians.
 
     p = inputParser;
     p.addParameter('RefCL', 150);
     p.addParameter('OnsetOpts', struct());
+    p.addParameter('PerCamera', []);
     p.parse(varargin{:});
     opt = p.Results;
 
@@ -75,6 +81,9 @@ function cadence_build_summary(T, out_xlsx, varargin)
     writecell([C; body], out_xlsx, 'Sheet', 'Recordings');
     Trec = T(:, [meta_cols, mnames']);
     writetable(Trec, fullfile(outdir, [stem '_recordings.csv']));
+
+    % ---- Sheet 1b: Per camera (multi-camera rigs) -------------------------------
+    n_percam = write_per_camera(opt.PerCamera, out_xlsx, outdir, stem);
 
     % ---- Sheet 2: By experiment -----------------------------------------------------
     keyE = strcat(string(nz(T.ZT)), "|", T.Experiment, "|", T.Condition, "|", string(nz(T.CL_ms)));
@@ -173,7 +182,8 @@ function cadence_build_summary(T, out_xlsx, varargin)
          'Value', 'median over finite pixels of the masked map (slot 1), per recording'; ...
          'Mask', 'adaptive SNR mask per camera: SNR >= max(1.5, 0.5 x median tissue SNR), holes filled, specks removed'; ...
          'Analysis window', 'ensemble-averaged beat (CAM<n>_average) for all timing metrics; full record for alternans and DF/RI/OI'; ...
-         'Cameras', 'CAM1 = voltage, CAM2 = calcium'; ...
+         'Cameras', 'voltage metrics from the first voltage camera, calcium metrics from the first calcium camera, as assigned for the run (camera_roles in each metrics file); files extracted without roles assume CAM1 = voltage, CAM2 = calcium'; ...
+         'Per camera', per_camera_note(n_percam); ...
          'Conduction velocity', 'interior pixels only (8 px erosion of the tissue mask), cm/s'; ...
          'Alternans present', 'fraction of tissue pixels with alternans ratio > 0.10 and p < 0.05 is >= 0.10 (SigFrac); discordant when concordance ratio < 0.80'; ...
          'Arrhythmia', 'file tag containing "arrhythm", or capture ratio outside 1 +/- 0.15 with OI (V) < 0.5'; ...
@@ -188,6 +198,71 @@ end
 
 
 % =========================================================================
+function n = write_per_camera(Tc, out_xlsx, outdir, stem)
+% 'Per camera' sheet + CSV.  Returns the number of rows written (0 = no sheet).
+    n = 0;
+    if isempty(Tc), return; end
+    if ischar(Tc) || isstring(Tc)
+        if ~isfile(char(Tc)), return; end
+        Tc = readtable(char(Tc), 'TextType', 'string', 'Delimiter', ',');
+    end
+    if ~istable(Tc) || height(Tc) == 0 || ~all(ismember({'Camera','Signal'}, Tc.Properties.VariableNames))
+        return;
+    end
+    Tc.Camera = fillstr(Tc, 'Camera');  Tc.Signal = fillstr(Tc, 'Signal');
+    key = fillstr(Tc, 'File');
+    if ismember('Source', Tc.Properties.VariableNames), key = fillstr(Tc, 'Source'); end
+    % only worth a sheet when some recording has two cameras of one signal type
+    [~, ~, g] = unique(strcat(key, "|", Tc.Signal));
+    if max(accumarray(g, 1)) < 2, return; end
+
+    Tc.Condition  = fillstr(Tc, 'Condition');
+    Tc.Experiment = fillstr(Tc, 'Experiment');
+    expnum = nan(height(Tc), 1);  camnum = nan(height(Tc), 1);
+    for i = 1:height(Tc)
+        t = regexp(char(Tc.Experiment(i)), '\d+', 'match', 'once');
+        if ~isempty(t), expnum(i) = str2double(t); end
+        t = regexp(char(Tc.Camera(i)), '\d+', 'match', 'once');
+        if ~isempty(t), camnum(i) = str2double(t); end
+    end
+    num = @(c) numcol(Tc, c);
+    [~, ord] = sortrows([nz(num('ZT')), nz(expnum), double(Tc.Condition ~= "Baseline"), ...
+                         -nz(num('CL_ms')), nz(num('Run')), double(Tc.Signal ~= "voltage"), nz(camnum)]);
+    Tc = Tc(ord, :);
+
+    L = cadence_metric_labels();
+    L = L(ismember(L(:,1), Tc.Properties.VariableNames), :);
+    has = cellfun(@(c) any(isfinite(double(Tc.(c)))), L(:,1));
+    L = L(has, :);                                  % drop metrics no camera has
+    meta_cols = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File','Camera','Signal'};
+    meta_lbl  = {'ZT','Experiment','Condition','CL (ms)','Tag','Run','Date','File','Camera','Signal'};
+    keep = ismember(meta_cols, Tc.Properties.VariableNames);
+    meta_cols = meta_cols(keep);  meta_lbl = meta_lbl(keep);
+    C = [meta_lbl, L(:,2)'];
+    body = cell(height(Tc), numel(C));
+    for i = 1:height(Tc)
+        for k = 1:numel(meta_cols), body{i,k} = cellval(Tc.(meta_cols{k})(i)); end
+        for k = 1:size(L,1), body{i,numel(meta_cols)+k} = cellval(Tc.(L{k,1})(i)); end
+    end
+    writecell([C; body], out_xlsx, 'Sheet', 'Per camera');
+    writetable(Tc(:, [meta_cols, L(:,1)']), fullfile(outdir, [stem '_per_camera.csv']));
+    n = height(Tc);
+end
+
+function s = per_camera_note(n)
+    if n > 0
+        s = sprintf(['%d rows: every camera of every recording, voltage metrics for voltage cameras and ' ...
+                     'calcium metrics for calcium cameras, same medians as Recordings; pair metrics ' ...
+                     '(V-Ca delay, Ca-AP coupling, risk) and recording-level metrics stay on Recordings'], n);
+    else
+        s = 'not written: no recording has more than one camera of the same signal type';
+    end
+end
+
+function v = numcol(T, c)
+    if ismember(c, T.Properties.VariableNames), v = double(T.(c)); else, v = nan(height(T), 1); end
+end
+
 function nv = struct2nv(s)
     f = fieldnames(s); nv = cell(1, 2*numel(f));
     for k = 1:numel(f), nv{2*k-1} = f{k}; nv{2*k} = s.(f{k}); end

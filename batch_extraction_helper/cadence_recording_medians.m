@@ -5,6 +5,12 @@ function [vals, labels] = cadence_recording_medians(d, varargin)
 %   vals = cadence_recording_medians('path/to/x-metrics.mat')
 %   [vals, labels] = cadence_recording_medians(..., 'VoltageCam', 1, 'CalciumCam', 2)
 %
+%   Cameras: an explicit 'VoltageCam' / 'CalciumCam' wins; otherwise the first
+%   voltage and first calcium camera recorded in metrics.camera_roles (written
+%   by cadence_extract_features); otherwise, for files extracted before roles
+%   were recorded, CAM1 = voltage and CAM2 = calcium.  A role with no camera
+%   (e.g. a voltage-only rig) leaves that family of metrics NaN.
+%
 %   metrics is the cmos_all_data struct with ep_metrics (what Feature
 %   Extraction saves, or what cadence_extract_features returns).  Returns a
 %   struct with one field per metric in cadence_metric_labels (NaN where a
@@ -16,8 +22,8 @@ function [vals, labels] = cadence_recording_medians(d, varargin)
 %   because one-sided smoothing biases CV high along the mask border.
 
     p = inputParser;
-    p.addParameter('VoltageCam', 1);
-    p.addParameter('CalciumCam', 2);
+    p.addParameter('VoltageCam', []);
+    p.addParameter('CalciumCam', []);
     p.addParameter('CVEdgeMargin', 8);
     p.addParameter('Polyfit', true);
     p.parse(varargin{:});
@@ -36,6 +42,14 @@ function [vals, labels] = cadence_recording_medians(d, varargin)
     if ~isfield(d, 'ep_metrics') || ~isstruct(d.ep_metrics), return; end
     em = d.ep_metrics;
     v  = o.VoltageCam;  ca = o.CalciumCam;
+    roles = [];
+    if isfield(d, 'camera_roles') && isstruct(d.camera_roles), roles = d.camera_roles; end
+    if isempty(v)
+        if isempty(roles), v = 1; else, v = first_or_zero(roles.voltage); end
+    end
+    if isempty(ca)
+        if isempty(roles), ca = 2; else, ca = first_or_zero(roles.calcium); end
+    end
 
     % ---- voltage maps ------------------------------------------------------
     act = slot(em, 'act_times', v, 1);
@@ -113,6 +127,7 @@ function [vals, labels] = cadence_recording_medians(d, varargin)
     if isfield(d, 'analog1') && ~isempty(d.analog1) && isfield(d, 'acqFreq') && ...
             exist('check_polarity_paced', 'file') == 2
         for cc = unique([v ca])
+            if cc < 1, continue; end
             cf = sprintf('CAM%d', cc);  sf = sprintf('CAM%d_SNR', cc);
             if ~isfield(d, cf) || isempty(d.(cf)), continue; end
             try
@@ -307,9 +322,13 @@ function m = level_map(d, em, field, cam, rep_val, label)
     end
 end
 
+function c = first_or_zero(list)
+    if isempty(list), c = 0; else, c = double(list(1)); end
+end
+
 function x = slot(em, field, cam, k)
     x = [];
-    if ~isfield(em, field), return; end
+    if isempty(cam) || cam < 1 || ~isfield(em, field), return; end
     c = em.(field);
     if ~iscell(c) || size(c,1) < cam || size(c,2) < k, return; end
     x = c{cam, k};

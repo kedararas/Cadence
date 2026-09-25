@@ -7,11 +7,14 @@ function T = cadence_recompute_medians(output_root, varargin)
 %   Scans <output_root>/**/*-metrics.mat, recomputes cadence_recording_medians
 %   for each (no feature extraction, ~10-15 s per file for loading) and
 %   rewrites <output_root>/cadence_recording_medians.csv and the Excel summary.
+%   The per-camera table (cadence_camera_medians: one row per camera, so the
+%   extra cameras of a multi-camera voltage rig are kept) is rebuilt at the
+%   same time in <output_root>/cadence_camera_medians.csv.
 %   Use it after changing cadence_metric_labels / cadence_recording_medians,
 %   or to summarise metrics files produced by the app itself.
 %
 %   Options: 'Folders' (relative folders under output_root), 'MediansFile',
-%   'SummaryFile', 'BuildSummary' (default true), 'SaveMapsPDF' (default
+%   'SummaryFile', 'CameraFile', 'BuildSummary' (default true), 'SaveMapsPDF' (default
 %   false: write <name>-maps.pdf next to every metrics file, the cardiac maps
 %   of each feature and camera, see cadence_maps_pdf; existing PDFs are
 %   rewritten), 'ExcludePattern'.
@@ -20,6 +23,7 @@ function T = cadence_recompute_medians(output_root, varargin)
     p.addParameter('Folders', {}, @(x) iscellstr(x) || isstring(x) || ischar(x));
     p.addParameter('MediansFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('SummaryFile', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('CameraFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('BuildSummary', true, @islogical);
     p.addParameter('SaveMapsPDF', false, @islogical);
     p.addParameter('ExcludePattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
@@ -29,6 +33,7 @@ function T = cadence_recompute_medians(output_root, varargin)
     output_root = char(output_root);
     if isempty(o.MediansFile), o.MediansFile = fullfile(output_root, 'cadence_recording_medians.csv'); end
     if isempty(o.SummaryFile), o.SummaryFile = fullfile(output_root, 'CADENCE_median_summary.xlsx'); end
+    if isempty(o.CameraFile),  o.CameraFile  = fullfile(output_root, 'cadence_camera_medians.csv'); end
     if ~exist('compute_lat_50', 'file'), cadence_batch_paths(); end
 
     files = dir(fullfile(output_root, '**', '*-metrics.mat'));
@@ -49,6 +54,7 @@ function T = cadence_recompute_medians(output_root, varargin)
 
     L = cadence_metric_labels();
     rows = cell(1, numel(files));
+    cams = cell(numel(files), 1);
     for k = 1:numel(files)
         f = fullfile(files(k).folder, files(k).name);
         t0 = tic;
@@ -66,6 +72,15 @@ function T = cadence_recompute_medians(output_root, varargin)
             v = cadence_recording_medians(d);
             fn = fieldnames(v);
             for q = 1:numel(fn), r.(fn{q}) = v.(fn{q}); end
+            cm = struct();
+            for q = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File','Source','Metrics_file'}
+                cm.(q{1}) = r.(q{1});
+            end
+            try
+                cams{k} = cadence_camera_medians(d, 'Meta', cm);
+            catch ME
+                r.Errors = string(['per-camera: ' ME.message]);
+            end
             r.Extracted_on = string(datestr(files(k).datenum, 'yyyy-mm-dd HH:MM:SS'));
             pdf = regexprep(f, '-metrics\.mat$', '-maps.pdf');
             if o.SaveMapsPDF
@@ -90,8 +105,15 @@ function T = cadence_recompute_medians(output_root, varargin)
     T = struct2table_uniform(rows);
     writetable(T, o.MediansFile);
     fprintf('wrote %s\n', o.MediansFile);
+    cams = cams(~cellfun(@isempty, cams));
+    Tcam = table();
+    if ~isempty(cams)
+        Tcam = vertcat(cams{:});
+        writetable(Tcam, o.CameraFile);
+        fprintf('wrote %s (%d camera rows)\n', o.CameraFile, height(Tcam));
+    end
     if o.BuildSummary && ~isempty(rows)
-        cadence_build_summary(T, o.SummaryFile);
+        cadence_build_summary(T, o.SummaryFile, 'PerCamera', Tcam);
     end
 end
 

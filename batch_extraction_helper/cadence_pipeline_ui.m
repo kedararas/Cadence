@@ -14,6 +14,9 @@ function fig = cadence_pipeline_ui()
 %             the conditioning log)
 %     STEP 3  metrics output folder (metrics files, medians CSV, workbook, log)
 %     STEP 4  the Signal Conditioning dropdowns with their app defaults, the
+%             signal type of each camera (VOLTAGE / CALCIUM / NOT USED; no
+%             default -- the run refuses to start until all four are set, so
+%             the batch never guesses which camera is which), the
 %             extraction field of view, and the run options (dry run, resume,
 %             re-condition, re-convert, keep converted files, condition the
 %             arrhythmia-tagged recordings, save a PDF of the cardiac maps)
@@ -35,7 +38,7 @@ function fig = cadence_pipeline_ui()
     fig = uifigure('Name', 'Cadence - Batch Pipeline (raw -> converted -> conditioned -> metrics)', ...
                    'Position', [300 80 1240 940], 'Visible', 'off');
     g = uigridlayout(fig, [6 1]);
-    g.RowHeight = {250, 78, 78, 228, 48, '1x'};
+    g.RowHeight = {250, 78, 78, 262, 48, '1x'};
     g.Padding = [8 8 8 8];  g.RowSpacing = 8;
     h = struct();
 
@@ -78,8 +81,8 @@ function fig = cadence_pipeline_ui()
     p4 = uipanel(g, 'Title', 'STEP 4: SIGNAL CONDITIONING SETTINGS (defaults = recommended), EXTRACTION AND RUN OPTIONS', ...
                  'FontWeight', 'bold');
     p4.Layout.Row = 4;
-    g4 = uigridlayout(p4, [5 8]);
-    g4.RowHeight = {26, 26, 26, 26, 26};  g4.ColumnWidth = {'1x', 100, '1x', 100, '1x', 100, '1x', 100};
+    g4 = uigridlayout(p4, [6 8]);
+    g4.RowHeight = {26, 26, 26, 26, 26, 26};  g4.ColumnWidth = {'1x', 100, '1x', 100, '1x', 100, '1x', 100};
     g4.Padding = [6 6 6 6];
     h.SVD      = dd(g4, 1, 1, 'A) SVD DENOISING', {'YES', 'NO'}, 'YES');
     h.Binning  = dd(g4, 1, 3, 'B) BINNING', {'NO', 'YES'}, 'NO');
@@ -100,6 +103,13 @@ function fig = cadence_pipeline_ui()
     h.FOV = uieditfield(g4, 'numeric', 'Value', 20, 'Limits', [0.1 Inf], 'FontWeight', 'bold');
     h.FOV.Layout.Row = 4;  h.FOV.Layout.Column = 8;
     h.MapsPDF     = cb(g4, 5, [1 4], 'Save a PDF of the cardiac maps for each recording (<name>-maps.pdf next to the metrics file)', false);
+    % Signal type per camera.  No default on purpose: the batch must not guess
+    % (it used to assume CAM1 = voltage, CAM2 = calcium for every rig).
+    sig = {'SELECT...', 'VOLTAGE', 'CALCIUM', 'NOT USED'};
+    h.Cam = gobjects(1, 4);
+    for k = 1:4
+        h.Cam(k) = dd(g4, 6, 2*k - 1, sprintf('CAM%d SIGNAL', k), sig, 'SELECT...');
+    end
 
     % ---- run / stop --------------------------------------------------------------
     g5 = uigridlayout(g, [1 2]);
@@ -120,7 +130,7 @@ function fig = cadence_pipeline_ui()
         'STEP 1) Select the parent folder of the raw recordings. Every sub-folder (any depth) that holds .tif volumes or SciMedia .gsh/.gsd pairs is one recording. Optionally pick sub-folders to restrict the run.'; ''; ...
         'STEP 2) Select the processed folder: converted .mat files go to converted/, conditioned files to conditioned/, with a conditioning log.'; ''; ...
         'STEP 3) Select the metrics output folder: -metrics.mat files, the per-recording medians CSV, the Excel summary and the batch log.'; ''; ...
-        'STEP 4) Check the conditioning settings (defaults = recommended: SVD denoising, [0, 50] Hz filter, drift correction, normalization, ensemble averaging) and run. Features are extracted with the adaptive SNR mask on the ensemble beat. The run resumes where it stopped.'};
+        'STEP 4) Check the conditioning settings (defaults = recommended: SVD denoising, [0, 50] Hz filter, drift correction, normalization, ensemble averaging), then set the SIGNAL type of each camera (VOLTAGE, CALCIUM, or NOT USED for cameras the recordings do not have). The same assignment applies to every recording in the run, so process rigs with different camera layouts in separate runs. Features are extracted with the adaptive SNR mask on the ensemble beat. The run resumes where it stopped.'};
 
     fig.UserData = struct('h', h, 'stop', false, 'running', false, 'last_table', table());
     fig.Visible = 'on';
@@ -241,7 +251,22 @@ function run_pressed(fig)
     co.Motion    = strcmp(h.Motion.Value, 'YES');
     fz = regexp(h.Filter.Value, '\[0,\s*(\d+)\]', 'tokens', 'once');
     if isempty(fz), co.FilterHz = []; else, co.FilterHz = str2double(fz{1}); end
-    eo = struct('FOV_mm', h.FOV.Value);
+    types = arrayfun(@(k) h.Cam(k).Value, 1:4, 'UniformOutput', false);
+    if ~h.DryRun.Value
+        if any(strcmp(types, 'SELECT...'))
+            console(fig, ['Set the SIGNAL type of every camera in STEP 4 (CAM1-CAM4): VOLTAGE, CALCIUM, ' ...
+                          'or NOT USED for cameras the recordings do not have. Nothing was run.']);
+            return;
+        end
+        if ~any(ismember(types, {'VOLTAGE', 'CALCIUM'}))
+            console(fig, 'At least one camera must be VOLTAGE or CALCIUM. Nothing was run.');
+            return;
+        end
+    end
+    eo = struct('FOV_mm', h.FOV.Value, ...
+                'VoltageCams', find(strcmp(types, 'VOLTAGE')), ...
+                'CalciumCams', find(strcmp(types, 'CALCIUM')));
+    roles_txt = strjoin(arrayfun(@(k) sprintf('CAM%d %s', k, lower(types{k})), 1:4, 'UniformOutput', false), ', ');
 
     folders = cellstr(h.FolderList.Value);
     folders = folders(~cellfun(@isempty, folders));
@@ -263,6 +288,7 @@ function run_pressed(fig)
     else, console(fig, ['Scope: ' strjoin(folders, ', ')]); end
     console(fig, sprintf('Conditioning: SVD %s | binning %s (%d) | filter %s | drift %s | normalize %s | ensemble %s | motion %s | FOV %g mm | maps PDF %s', ...
         h.SVD.Value, h.Binning.Value, co.BinSize, h.Filter.Value, h.Drift.Value, h.Normalize.Value, h.Ensemble.Value, h.Motion.Value, eo.FOV_mm, tern(h.MapsPDF.Value, 'yes', 'no')));
+    console(fig, ['Cameras: ' roles_txt]);
     drawnow;
 
     T = table();

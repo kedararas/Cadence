@@ -47,7 +47,9 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
 %     'ConditionOpts' struct for cadence_condition_data (Drift, SVD, SVDRank,
 %                    Binning, BinSize, FilterHz, Motion, Normalize, Ensemble,
 %                    MaskFloor).  Default struct() = the app's defaults.
-%     'ExtractOpts'  struct for cadence_extract_features (FOV_mm, ...).
+%     'ExtractOpts'  struct for cadence_extract_features (FOV_mm, VoltageCams,
+%                    CalciumCams, ...).  Set the camera roles for anything but a
+%                    CAM1-voltage / CAM2-calcium rig; see cadence_extract_features.
 %     'SaveConverted' keep the converted (raw .mat) files, default true.  They
 %                    are what a re-condition with other settings starts from
 %                    (a conditioned file must not be conditioned again); pass

@@ -41,6 +41,11 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 %                    (default <output_root>/cadence_recording_medians.csv)
 %     'SummaryFile'  Excel workbook
 %                    (default <output_root>/CADENCE_median_summary.xlsx)
+%     'CameraFile'   CSV of per-camera medians, one row per camera of every
+%                    recording (default <output_root>/cadence_camera_medians.csv;
+%                    see cadence_camera_medians).  The workbook gets a
+%                    'Per camera' sheet when a recording has more than one
+%                    camera of the same signal type.
 %     'BuildSummary' rebuild the workbook at the end (default true).
 %     'LogFile'      text log (default <output_root>/cadence_batch_log.txt)
 %     'MaxFiles'     stop after this many new recordings (default Inf).
@@ -82,6 +87,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     p.addParameter('ExtractOpts', struct(), @isstruct);
     p.addParameter('MediansFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('SummaryFile', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('CameraFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('BuildSummary', true, @islogical);
     p.addParameter('LogFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('MaxFiles', Inf, @isnumeric);
@@ -103,6 +109,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     note = @(s) log_line(-1, s, o.LogFcn);      % console line before the log file is open
     if isempty(o.MediansFile), o.MediansFile = fullfile(output_root, 'cadence_recording_medians.csv'); end
     if isempty(o.SummaryFile), o.SummaryFile = fullfile(output_root, 'CADENCE_median_summary.xlsx'); end
+    if isempty(o.CameraFile),  o.CameraFile  = fullfile(output_root, 'cadence_camera_medians.csv'); end
     if isempty(o.LogFile),     o.LogFile     = fullfile(output_root, 'cadence_batch_log.txt'); end
 
     if ~exist('compute_lat_50', 'file')
@@ -158,6 +165,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
             rows = {};
         end
     end
+    Tcam = read_camera_table(o.CameraFile);
     done_sources = cellfun(@(r) char(r.Source), rows, 'UniformOutput', false);
     done_metrics = cellfun(@(r) char(r.Metrics_file), rows, 'UniformOutput', false);
     find_row = @(job) find(strcmp(done_sources, job.source) | strcmp(done_metrics, job.metrics_file), 1);
@@ -225,6 +233,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
         logf(sprintf('[%d/%d] %s', jj, numel(idx), job.source));
 
         row = new_row(job);
+        Tc = read_camera_table('');
         row.Extracted_on = string(datestr(now, 'yyyy-mm-dd HH:MM:SS'));
         try
             % load (or build, when the caller supplied a Loader) + schema gate
@@ -278,10 +287,16 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
                 end
             end
 
-            % medians
+            % medians: per recording (first voltage / first calcium camera) ...
             vals = cadence_recording_medians(d);
             fn = fieldnames(vals);
             for k = 1:numel(fn), row.(fn{k}) = vals.(fn{k}); end
+            % ... and per camera, so every camera of a multi-camera rig is kept
+            try
+                Tc = cadence_camera_medians(d, 'Meta', camera_meta(row));
+            catch ME
+                logf(sprintf('   per-camera medians FAILED: %s', ME.message));
+            end
             clear d
         catch ME
             row.Errors = string(sprintf('%s%s', char(row.Errors), [' FATAL: ' ME.message]));
@@ -301,14 +316,22 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
         end
         T = rows_to_table(rows);
         writetable(T, o.MediansFile);
+        old = Tcam.Source == string(job.source) | Tcam.Metrics_file == string(job.metrics_file);
+        Tcam = [Tcam(~old, :); Tc];
+        writetable(Tcam, o.CameraFile);
         n_new = n_new + 1;
     end
 
     T = rows_to_table(rows);
     if ~isempty(rows), writetable(T, o.MediansFile); end
+    have_cam = ismember(T.Source, Tcam.Source) | ismember(T.Metrics_file, Tcam.Metrics_file);
+    if any(~have_cam)
+        logf(sprintf(['%d recording(s) in the medians CSV have no per-camera rows (extracted before ' ...
+                      'per-camera medians existed); cadence_recompute_medians fills them.'], nnz(~have_cam)));
+    end
     if o.BuildSummary && ~isempty(rows)
         try
-            cadence_build_summary(T, o.SummaryFile);
+            cadence_build_summary(T, o.SummaryFile, 'PerCamera', Tcam);
             logf(sprintf('summary written: %s', o.SummaryFile));
         catch ME
             logf(sprintf('summary FAILED: %s', ME.message));
@@ -433,6 +456,51 @@ function [names, types] = row_schema()
              'Maps_pdf','string'};
     all = [meta; mets; tail];
     names = all(:,1);  types = all(:,2);
+end
+
+function m = camera_meta(row)
+% Identity columns carried into the per-camera table (Source / Metrics_file
+% are the keys a re-run uses to replace its own rows).
+    f = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File','Source','Metrics_file'};
+    m = struct();
+    for k = 1:numel(f), m.(f{k}) = row.(f{k}); end
+end
+
+function Tcam = read_camera_table(csvfile)
+% Per-camera table from disk, coerced to the current schema; empty when the
+% file is absent or unreadable (it is rebuilt as recordings are processed).
+    [names, types] = row_schema();
+    meta = struct();
+    for k = 1:numel(names)
+        if strcmp(names{k}, 'Metrics_file'), break; end
+        if strcmp(types{k}, 'double'), meta.(names{k}) = NaN; else, meta.(names{k}) = ""; end
+    end
+    meta.Metrics_file = "";
+    meta = camera_meta(meta);
+    [Tcam, mnames] = cadence_camera_medians([], 'Meta', meta);
+    if isempty(csvfile) || ~isfile(csvfile), return; end
+    try
+        R = readtable(csvfile, 'TextType', 'string', 'Delimiter', ',');
+    catch ME
+        warning('cadence_batch_extract:cameraCSV', 'Could not read %s (%s); starting it fresh.', csvfile, ME.message);
+        return;
+    end
+    n = height(R);
+    cols = Tcam.Properties.VariableNames;
+    out = table();
+    for k = 1:numel(cols)
+        c = cols{k};
+        numeric = ismember(c, mnames) || (isfield(meta, c) && isnumeric(meta.(c)));
+        if ~ismember(c, R.Properties.VariableNames)
+            if numeric, out.(c) = nan(n, 1); else, out.(c) = strings(n, 1); end
+        elseif numeric
+            v = R.(c); if ~isnumeric(v), v = str2double(string(v)); end
+            out.(c) = double(v);
+        else
+            v = string(R.(c)); v(ismissing(v)) = ""; out.(c) = v;
+        end
+    end
+    Tcam = out;
 end
 
 function row = new_row(job)
