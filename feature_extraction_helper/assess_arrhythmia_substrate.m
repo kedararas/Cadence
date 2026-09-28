@@ -28,13 +28,15 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
 %
 %   Output struct fields
 %
-%   Phase / concordance
+%   Phase / concordance  (all at .apd_level, the same level as sig_mask)
+%     .apd_level          APD level (%) used for phase, significance and concordance
 %     .phase_map          [R x C] AP alternans phase: +1 odd>even, -1 odd<even, 0 invalid
 %     .phase_angle_map    [R x C] continuous AP phase angle (radians, −π to +π);
 %                                 angle of FFT coeff at 0.5 cyc/beat — reveals
 %                                 gradual phase gradients and travelling alternans waves
 %     .is_discordant      logical scalar: true when >20% of pixels are in minority phase
-%     .concordance_ratio  fraction of valid pixels sharing the majority phase [0, 1]
+%     .concordance_ratio  fraction of significant pixels sharing the majority phase
+%                         [0.5, 1]; 1 when no pixel is significant
 %     .nodal_lines        [R x C] logical: pixels at phase boundaries (highest risk sites)
 %
 %   Alternans ratio
@@ -144,35 +146,39 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
     %   +1 : odd beats have longer APD than even beats (positive phase)
     %   -1 : odd beats have shorter APD (negative / inverted phase)
     %    0 : invalid pixel
-    % Use precomputed map from ap_result if available (avoids recomputing
-    % the FFT), otherwise derive from the alternans sign.
     %
     % Continuous phase angle map  (radians, −π to +π)
     %   Computed as angle of the FFT coefficient at 0.5 cycles/beat.
     %   Gradual spatial gradients = travelling alternans wave.
     %   Pixels separated by ~π radians are in anti-phase (discordant).
-    if isfield(ap_result, 'phase_map')
-        phase_map = ap_result.phase_map;
-    else
-        phase_map          = zeros(R, C);
-        phase_map(valid)   = sign(apd_alt(valid));
-    end
+    %
+    % Both are derived HERE, at apd_level, and never taken from ap_result.
+    % ap_result.phase_map / phase_angle_map are pinned to APD80, whereas
+    % sig_mask below uses apd_alt at the auto-selected level (APD50 at fast
+    % pacing).  Mixing the two let pixels significant at APD50 but NaN at
+    % APD80 into n_sig without counting toward n_pos or n_neg, so
+    % concordance_ratio fell below its 0.5 floor and is_discordant was
+    % over-called (Fig 4 rat R7 85 ms: 0.441, with 26% of n_sig NaN at APD80).
+    % The two levels also disagree in sign on ~1/3 of pixels there, so the
+    % phase has to come from the same level as the mask, not just be filled
+    % in where APD80 is missing.  At APD80 the result equals ap_result's maps
+    % except that invalid pixels are 0 here (ap_result has NaN).
+    phase_map        = zeros(R, C);
+    phase_map(valid) = sign(apd_alt(valid));
 
-    if isfield(ap_result, 'phase_angle_map')
-        phase_angle_map = ap_result.phase_angle_map;
-    else
-        % Compute from per-beat APD stack
-        phase_angle_map = nan(R, C);
-        apd80_col_loc   = apd80_col;
-        if nBeats >= 4
-            all_apd = cat(3, ap_result.APD_beat{:, apd80_col_loc});
-            all_apd(isnan(all_apd)) = 0;
-            all_apd = all_apd - mean(all_apd, 3);
-            Y_ap    = fft(all_apd, [], 3);
-            alt_bin = floor(nBeats/2) + 1;
-            if alt_bin <= size(Y_ap, 3)
-                phase_angle_map = angle(Y_ap(:,:, alt_bin));
-            end
+    phase_angle_map = nan(R, C);
+    if nBeats >= 4
+        all_apd  = apd_stack;
+        % Keep only pixels with a finite APD on every beat; NaN->0 alone would
+        % give angle(0+0i)=0 at every background pixel (as analyzeAPAlternans).
+        ok_phase = all(isfinite(all_apd), 3);
+        all_apd(isnan(all_apd)) = 0;
+        all_apd = all_apd - mean(all_apd, 3);
+        Y_ap    = fft(all_apd, [], 3);
+        alt_bin = floor(nBeats/2) + 1;
+        if alt_bin <= size(Y_ap, 3)
+            phase_angle_map = angle(Y_ap(:,:, alt_bin));
+            phase_angle_map(~ok_phase) = NaN;
         end
     end
 
@@ -183,6 +189,13 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
     if n_sig > 0
         n_pos = sum(phase_map(sig_mask) > 0);
         n_neg = sum(phase_map(sig_mask) < 0);
+        % Every significant pixel has a nonzero apd_alt, so it must carry a
+        % phase of +1 or -1 and the ratio is bounded to [0.5, 1].  A pixel
+        % that counts in n_sig but in neither sign means the phase and the
+        % mask came from different APD levels again.
+        assert(n_pos + n_neg == n_sig, 'assess_arrhythmia_substrate:phaseMask', ...
+            '%d of %d significant pixels have no phase (phase/mask level mismatch).', ...
+            n_sig - n_pos - n_neg, n_sig);
         majority_n       = max(n_pos, n_neg);
         concordance_ratio = majority_n / n_sig;
         is_discordant    = concordance_ratio < 0.80;  % >20% in minority phase
@@ -538,6 +551,7 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
     %  Assemble output
     % =====================================================================
     % ── Phase / concordance ──────────────────────────────────────────────
+    substrate.apd_level          = apd_level;         % level behind phase, sig_mask, concordance
     substrate.phase_map          = phase_map;         % AP: binary +1/-1/0
     substrate.phase_angle_map    = phase_angle_map;   % AP: continuous [-pi,pi]
     substrate.is_discordant      = is_discordant;
