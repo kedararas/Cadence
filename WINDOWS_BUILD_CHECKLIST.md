@@ -9,7 +9,7 @@ MATLAB Compiler does not cross-compile. There is **no notarization on Windows**
 - Windows 10/11, 64-bit.
 - **MATLAB R2025b** (match the macOS build version) + **MATLAB Compiler**.
 - Toolboxes: **Signal Processing, Image Processing, Statistics & Machine Learning,
-  Curve Fitting, Computer Vision**.
+  Curve Fitting**.
 - For signing: a Windows **Authenticode code-signing certificate** (+ its hardware
   token / HSM) and **`signtool.exe`** (from the Windows SDK).
 
