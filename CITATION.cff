@@ -29,10 +29,12 @@ keywords:
   - rotor dynamics
   - MATLAB
 # --- Software archive DOI (the CODE itself) ---
-# Concept DOI until Zenodo mints the v1.0.1 version DOI; then set doi to the
-# v1.0.1 DOI and add it to identifiers below.
-doi: "10.5281/zenodo.22802984"
+# Version DOI: this specific v1.0.1 archive (Zenodo record created 2026-09-30).
+doi: "10.5281/zenodo.23067078"
 identifiers:
+  - type: doi
+    value: "10.5281/zenodo.23067078"
+    description: "Archived software release (v1.0.1)"
   - type: doi
     value: "10.5281/zenodo.22802984"
     description: "Concept DOI - always resolves to the latest version"

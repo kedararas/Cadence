@@ -165,6 +165,7 @@ If you use CADENCE in your research, please cite the archived release:
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22802984.svg)](https://doi.org/10.5281/zenodo.22802984)
 
 - **All versions:** [10.5281/zenodo.22802984](https://doi.org/10.5281/zenodo.22802984) — always resolves to the latest release
+- **v1.0.1:** [10.5281/zenodo.23067078](https://doi.org/10.5281/zenodo.23067078)
 - **v1.0.0:** [10.5281/zenodo.22802985](https://doi.org/10.5281/zenodo.22802985)
 
 Citation metadata is in [`CITATION.cff`](CITATION.cff) — on GitHub this powers the
