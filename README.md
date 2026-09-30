@@ -99,8 +99,8 @@ The modules are designed to be run in order; each writes a `.mat` file consumed 
 CADENCE’s requirements are driven by data size — recordings are large and the conditioning/ensemble steps hold multiple in‑memory copies, so **RAM is the dominant constraint**. A discrete GPU is **not** required or used.
 
 ### Software
-- **MATLAB Runtime R2025b (free, no license).** This is the only mandatory install and **must match the build version (R2025b)** and your Mac's architecture — the released build is **Apple Silicon**.
-- **Operating system (64‑bit):** macOS on Apple Silicon (the released build), or Windows 10/11 and Linux once those builds are published.
+- **MATLAB Runtime R2025b (free, no license).** This is the only mandatory install and **must match the build version (R2025b)** and your operating system — the macOS build is **Apple Silicon**; the Windows installer downloads the Runtime itself.
+- **Operating system (64‑bit):** macOS on Apple Silicon, or Windows 10/11. Linux builds are planned.
 - Administrator rights for the one‑time Runtime install; ~2–4 GB free disk for the Runtime.
 - **No MATLAB license and no toolboxes are required by the end user** — all dependencies are bundled.
 
@@ -118,17 +118,23 @@ An SSD is strongly recommended — loading hundreds‑of‑MB recordings from a 
 
 ## Installation
 
-CADENCE requires the free **MATLAB Runtime R2025b** — no MATLAB license needed. On the [MathWorks download page](https://www.mathworks.com/products/compiler/matlab-runtime.html), choose release **R2025b**, variant **macOS Apple silicon**.
+CADENCE requires the free **MATLAB Runtime R2025b** — no MATLAB license needed. Download the installer for your platform from the [latest GitHub release](https://github.com/kedararas/Cadence/releases/latest).
 
 ### macOS (Apple Silicon)
-1. Install **MATLAB Runtime R2025b** (link above) — variant **macOS Apple silicon**.
-2. Download `CADENCE.dmg`, open it, and drag **CADENCE** to your Applications folder.
+1. Install **MATLAB Runtime R2025b** from the [MathWorks download page](https://www.mathworks.com/products/compiler/matlab-runtime.html) — release **R2025b**, variant **macOS Apple silicon**.
+2. Download the CADENCE `.dmg`, open it, and drag **CADENCE** to your Applications folder.
 3. Launch **CADENCE** and begin at the Data Conversion module.
 
-> The macOS build is **code-signed and notarized** by Apple, so it opens normally — no Gatekeeper warning.
+> The macOS build is **code-signed and notarized** by Apple, so it opens normally — no Gatekeeper warning. Apple has discontinued Intel Mac support, so no Intel build is published; one can be produced on request.
 
-### Windows / Linux
-Coming soon — builds for these platforms are produced separately. The installer will bundle/download the matching MATLAB Runtime. Apple has discontinued Intel Mac support, so no Intel build is published; one can be produced on request.
+### Windows 10/11 (64‑bit)
+1. Download and run `CADENCE_Installer_Windows.exe`. It installs CADENCE and downloads the **MATLAB Runtime R2025b** if it is not already installed.
+2. Launch **CADENCE** from the Start menu and begin at the Data Conversion module.
+
+> The Windows installer is **not code-signed**, so SmartScreen shows "Windows protected your PC". Choose **More info → Run anyway**.
+
+### Linux
+Planned — not yet published.
 
 ## Quick start
 
@@ -150,16 +156,16 @@ Requires **MATLAB** plus these toolboxes:
 
 1. Clone/copy the repository and add it to the MATLAB path (`addpath(genpath(pwd))`).
 2. Open `Cadence.mlapp` in App Designer and **Run**, or run it from the command window.
-3. To build the standalone: `applicationCompiler` (entry point `Cadence.mlapp`), or `compiler.build.standaloneApplication("Cadence.mlapp", ...)`. Build separately on each target OS (the Compiler does not cross‑compile).
+3. To build the standalone: `applicationCompiler` (entry point `Cadence.mlapp`), or `compiler.build.standaloneApplication("Cadence.mlapp", ...)`. Build separately on each target OS (the Compiler does not cross‑compile). On Windows, `packaging/build_windows.m` builds the app and installer in one call.
 
 ## Citing CADENCE
 
 If you use CADENCE in your research, please cite the archived release:
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22802985.svg)](https://doi.org/10.5281/zenodo.22802985)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22802984.svg)](https://doi.org/10.5281/zenodo.22802984)
 
-- **This version (v1.0.0):** [10.5281/zenodo.22802985](https://doi.org/10.5281/zenodo.22802985)
 - **All versions:** [10.5281/zenodo.22802984](https://doi.org/10.5281/zenodo.22802984) — always resolves to the latest release
+- **v1.0.0:** [10.5281/zenodo.22802985](https://doi.org/10.5281/zenodo.22802985)
 
 Citation metadata is in [`CITATION.cff`](CITATION.cff) — on GitHub this powers the
 **“Cite this repository”** button (APA/BibTeX export).

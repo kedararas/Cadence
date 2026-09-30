@@ -18,7 +18,19 @@ Bring the whole project, same folder structure: `Cadence.mlapp` (launcher), the
 five module `.mlapp` files, all helper folders (`utils/`, `*_helper/`,
 `validation_helper/`), `Logo_v3.png`, `Sidebar.png`, the icon, and the docs.
 
-## 3. Build (Application Compiler)
+## 3. Build
+
+**Scripted (recommended, used for v1.0.1):** from the repo folder in MATLAB on
+Windows, run `cd packaging; build_windows('1.0.1')`. It puts only the source
+folders on the path, bundles the helper folders explicitly (the automatic
+dependency scan missed `GSDconverter_BVW` on Windows), uses the square icon, and
+reports the build-log checks. Output goes to `C:\CADENCE_build`. The macOS
+compiler tasks in `Cadence2026.prj` do not open on Windows.
+
+If File Explorer still shows a default icon for `CADENCE.exe` after a rebuild,
+it is the icon cache: copy the file to a new name to see the real icon.
+
+**Application Compiler (manual alternative):**
 - Run `applicationCompiler`.
 - **Main file:** `Cadence.mlapp`.
 - **Files installed with the app:** `Logo_v3.png`, `Sidebar.png`, icon.

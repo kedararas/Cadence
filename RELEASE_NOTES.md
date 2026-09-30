@@ -5,6 +5,57 @@ when you publish, and attach the platform installer/DMG as a release asset.
 
 ---
 
+## v1.0.1 — macOS (Apple Silicon) + Windows
+
+Bug-fix release in the 1.0 series, and the first Windows build. Both platforms
+are built from the same commit.
+
+**Install**
+
+| Platform | Download | MATLAB Runtime R2025b |
+|---|---|---|
+| **macOS, Apple Silicon** (M1–M4) | `CADENCE-1.0.1-AppleSilicon.dmg` | install first — variant **macOS Apple silicon** |
+| **Windows 10/11, 64-bit** | `CADENCE_Installer_Windows.exe` | downloaded by the installer if missing |
+
+- **macOS:** install the free MATLAB Runtime R2025b
+  (https://www.mathworks.com/products/compiler/matlab-runtime.html), open the DMG
+  and drag **CADENCE** to Applications. The build is code-signed and notarized by
+  Apple, so it opens normally.
+- **Windows:** run `CADENCE_Installer_Windows.exe`; it installs CADENCE and, if
+  needed, downloads the MATLAB Runtime R2025b. The installer is **not
+  code-signed**, so Windows SmartScreen shows "Windows protected your PC" —
+  choose **More info → Run anyway**.
+
+**Changes since v1.0.0** — two of these change extracted values (marked
+*results*); re-condition or re-extract before combining results across versions.
+
+- **Signal Conditioning (*results*):** ensemble-average outlier-beat rejection
+  now uses a robust rule (RMS deviation > median + 3 × max(1.4826·MAD,
+  0.10·median), applied from 4 beats). The previous mean + 3 SD rule could not
+  reject a beat when 10 or fewer beats were available. Recordings with recurring
+  abnormal beats get cleaner averages; clean recordings are unchanged.
+- **Arrhythmia substrate (*results*):** alternans concordance, nodal lines and
+  the risk map now take the alternans phase at the same APD level as the
+  significance mask (the automatic level, APD50 at fast pacing). Previously the
+  phase was always APD80, which could push the concordance ratio below its 0.5
+  floor and over-call discordant alternans. The APD level used is saved as
+  `apd_level`.
+- **Signal Conditioning:** motion correction without a pacing channel no longer
+  aborts the run; the polarity confidence is signed the same way for the
+  stimulus and shape checks, with its source saved (`CAM<n>_polarity_source`);
+  the SVD rank kept is saved (`CAM<n>_svd_rank`).
+- **Feature Extraction:** image alignment now applies the same transform to the
+  data as to the displayed image (the data stack previously got transposed
+  translations); alternans panel labels corrected; the activation-time note now
+  reads "50% crossing of the upstroke".
+- **Conduction Velocity:** with auto-correct on, a valid manual pacing origin is
+  no longer replaced by the auto-detected one; the engine label shows the engine
+  actually used.
+- **Running from source:** the Computer Vision Toolbox is no longer required;
+  build output and hidden folders are kept off the MATLAB path at startup.
+
+---
+
 ## v1.0.0 — macOS (Apple Silicon)
 
 The release accompanying the CADENCE manuscript.

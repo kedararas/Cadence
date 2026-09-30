@@ -17,8 +17,8 @@ authors:
 repository-code: "https://github.com/kedararas/Cadence"
 url: "https://github.com/kedararas/Cadence"
 license: MIT
-version: "1.0.0"            # update to match each release/tag
-date-released: "2026-09-16" # update on release
+version: "1.0.1"            # update to match each release/tag
+date-released: "2026-09-30" # update on release
 keywords:
   - cardiac electrophysiology
   - optical mapping
@@ -29,15 +29,16 @@ keywords:
   - rotor dynamics
   - MATLAB
 # --- Software archive DOI (the CODE itself) ---
-# Version DOI: this specific v1.0.0 archive. Verified to resolve 2026-09-16.
-doi: "10.5281/zenodo.22802985"
+# Concept DOI until Zenodo mints the v1.0.1 version DOI; then set doi to the
+# v1.0.1 DOI and add it to identifiers below.
+doi: "10.5281/zenodo.22802984"
 identifiers:
-  - type: doi
-    value: "10.5281/zenodo.22802985"
-    description: "Archived software release (v1.0.0)"
   - type: doi
     value: "10.5281/zenodo.22802984"
     description: "Concept DOI - always resolves to the latest version"
+  - type: doi
+    value: "10.5281/zenodo.22802985"
+    description: "Archived software release (v1.0.0)"
 
 # --- Preferred citation (the PAPER) ---
 # Once the manuscript is published, fill this in. CFF treats this as the
