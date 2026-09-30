@@ -35,7 +35,8 @@ function [alternans] = analyzeAPAlternans(time, voltage, varargin)
 %     .APD##_alt     APD alternans map at each requested level (e.g. APD80_alt)
 %     .amp_alt_map   Amplitude alternans map
 %     .dvdt_alt_map  Max-upstroke-velocity alternans map (normalised units/ms)
-%     .tri_alt_map   Triangulation alternans map (APD90 - APD30, ms)
+%     .tri_alt_map   Triangulation alternans map (APD80 - APD30, ms; needs
+%                    levels 30 and 80. The 1-D .tri uses APD90 - APD30)
 %     .pval_map      Pixel-wise paired t-test p-value (APD80)
 %     .tstat_map     Pixel-wise t-statistic
 %     .spectral_map  Pixel-wise spectral alternans index (power at 0.5 cyc/beat),

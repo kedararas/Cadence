@@ -74,7 +74,7 @@ function [denoised, info] = denoise_svd(data, K, varargin)
     end
     if ~any(valid)
         warning('denoise_svd:noValidPixels', 'No valid pixels; returning input.');
-        denoised = data;  info = struct('K',0); return;
+        denoised = data;  info = struct('K', 0, 'applied', false); return;   % callers read .applied
     end
 
     Mv = M(valid, :);                          % validPix x frames

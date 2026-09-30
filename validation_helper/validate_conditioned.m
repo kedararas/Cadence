@@ -127,7 +127,16 @@ function recs = validate_conditioned(d, recording)
                 % (e.g. calcium transients at fast rates do not relax within one
                 % cycle), so the ensemble average is garbage even though it passes
                 % the range check (ensembleAverageFull normalizes to [0,1]).
-                df = ensemble_decay_fraction(d.(avgf));
+                % Judged over tissue only, with the same adaptive SNR mask the
+                % extraction-stage guard (check_analysis_window) is given. The
+                % average is not masked in the file and is normalized per pixel
+                % to [0,1], so background noise looks full-amplitude and, unmasked,
+                % dragged this median down.
+                mk = [];
+                if isfield(d, snrf) && ~isempty(d.(snrf)) && exist('create_snr_mask', 'file') == 2
+                    mk = create_snr_mask(d.(snrf), [], true);
+                end
+                df = ensemble_decay_fraction(d.(avgf), mk);
                 if isnan(df)
                     add(cam + "_average", "PASS", ar, "");
                 elseif df < 0.5
@@ -146,9 +155,10 @@ function recs = validate_conditioned(d, recording)
 end
 
 
-function df = ensemble_decay_fraction(A)
+function df = ensemble_decay_fraction(A, mask)
 %ENSEMBLE_DECAY_FRACTION  How fully the averaged beat relaxes toward baseline.
 %   df = ensemble_decay_fraction(A)
+%   df = ensemble_decay_fraction(A, mask)   % [rows x cols] tissue mask; [] = all pixels
 %
 %   A is the ensemble-average array (rows x cols x frames): one representative
 %   beat per pixel.  For each high-amplitude (tissue) pixel, computes
@@ -165,6 +175,9 @@ function df = ensemble_decay_fraction(A)
     end
     T = sz(3);
     P = double(reshape(A, [], T));            % pixels x frames
+    if nargin > 1 && ~isempty(mask) && numel(mask) == size(P, 1) && any(mask(:))
+        P = P(logical(mask(:)), :);           % tissue pixels only
+    end
     P = P(all(isfinite(P), 2), :);            % drop background / NaN pixels
     if isempty(P)
         return;

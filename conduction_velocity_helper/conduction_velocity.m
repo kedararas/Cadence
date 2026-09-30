@@ -11,7 +11,8 @@ function [Vmag, Vx, Vy, Gx, Gy, meta] = conduction_velocity(T, dx, dy, opts)
 %          .method            : 'gradient' (finite-difference of smoothed T,
 %                               default) or 'polyfit' (grad from a local least-
 %                               squares surface fit — more robust, curvature-aware)
-%          .smooth_sigma_pix  : Gaussian sigma in pixels (default 0 = none)
+%          .smooth_sigma_pix  : Gaussian sigma in pixels (default 2; 0 = none).
+%                               NaN-aware, so it does not erode the tissue edge
 %          .min_support       : reject smoothed pixels whose valid fraction of
 %                               kernel mass is below this (default 0.5; 1 =
 %                               fully valid neighbourhood, ~0.5 = straight edge)
@@ -31,9 +32,10 @@ function [Vmag, Vx, Vy, Gx, Gy, meta] = conduction_velocity(T, dx, dy, opts)
 %
 % Relationship used:
 %   speed  = 1 / ||∇T||,
-%   vector = -∇T / ||∇T||^2
-%   (direction points from early->late; units consistent when T is in ms and
-%   x,y in mm, giving CV in mm/ms)
+%   vector = +∇T / ||∇T||^2
+%   (∇T points toward increasing activation time, so the vector points from
+%   early to late, i.e. along propagation; units consistent when T is in ms
+%   and x,y in mm, giving CV in mm/ms)
 
 if nargin < 4, opts = struct(); end
 opts = setdefault(opts, 'method', 'gradient');     % 'gradient' | 'polyfit'
