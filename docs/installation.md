@@ -39,5 +39,5 @@ installs the app + the Windows MATLAB Runtime.
 ## Running from source (developers)
 
 Requires MATLAB + Signal Processing, Image Processing, Statistics & Machine
-Learning, Curve Fitting, and Computer Vision toolboxes. Add the repo to the path
+Learning, and Curve Fitting toolboxes. Add the repo to the path
 and run `Cadence.mlapp`.

@@ -146,7 +146,7 @@ CADENCE stores everything in a single MATLAB struct per recording:
 ## Running from source (developers)
 
 Requires **MATLAB** plus these toolboxes:
-**Signal Processing**, **Image Processing**, **Statistics and Machine Learning**, **Curve Fitting**, and **Computer Vision**. *(Building the standalone additionally requires **MATLAB Compiler**.)*
+**Signal Processing**, **Image Processing**, **Statistics and Machine Learning**, and **Curve Fitting**. *(Building the standalone additionally requires **MATLAB Compiler**.)*
 
 1. Clone/copy the repository and add it to the MATLAB path (`addpath(genpath(pwd))`).
 2. Open `Cadence.mlapp` in App Designer and **Run**, or run it from the command window.
