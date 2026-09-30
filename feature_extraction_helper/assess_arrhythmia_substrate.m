@@ -16,7 +16,10 @@ function substrate = assess_arrhythmia_substrate(ap_result, varargin)
 %                   Required for diastolic Ca elevation map.
 %     'BeatFrames'  [num_beats x 2] [start_frame, end_frame] per beat.
 %                   Required for restitution slope and diastolic Ca maps.
-%     'APD_level'   Which APD level to use as primary metric (default: 80).
+%     'APD_level'   Which APD level to use as primary metric (default:
+%                   'auto' = the deepest level whose alternans-map coverage
+%                   is >= 75% of the best-covered level, see select_apd_level;
+%                   APD80 on normal recordings). Pass a number to force one.
 %     'MinAlt'      Minimum APD alternans fraction to flag a pixel as
 %                   significant (default: 0.15 = 15% of mean APD).
 %                   NB this header used to say 0.05 while the code used 0.15.

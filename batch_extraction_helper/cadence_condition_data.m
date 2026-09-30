@@ -15,6 +15,7 @@ function [d, status] = cadence_condition_data(d, opts)
 %     2  drift correction   remove_Drift                               [Drift]
 %     3  SVD denoising      denoise_svd(., SVDRank); a camera the SVD
 %                           cannot be applied to gets 5 x 5 binning     [SVD]
+%                           -> CAM<n>_svd_rank (rank kept; 0 = binning fallback)
 %     4  spatial binning    binning(., BinSize)                        [Binning]
 %     5  temporal filter    filter_data(., acqFreq, FilterHz)          [FilterHz]
 %     6  motion correction  trackCardiacMotion to the frame before
@@ -114,11 +115,15 @@ function [d, status] = cadence_condition_data(d, opts)
             for i = 1:d.num_files
                 f = sprintf('CAM%d', i);
                 [den, info] = denoise_svd(d.(f), P.SVDRank);
+                % Provenance: rank kept, or 0 when the camera fell back to
+                % 5 x 5 binning. Field absent = SVD not selected.
                 if info.applied
                     d.(f) = den;
-                    say(['SVD Denoising of data completed for: ', f]);
+                    d.(sprintf('CAM%d_svd_rank', i)) = info.K;
+                    say(sprintf('SVD Denoising of data completed for: %s (rank %d)', f, info.K));
                 else
                     d.(f) = binning(d.(f), 5);
+                    d.(sprintf('CAM%d_svd_rank', i)) = 0;
                     say(['Spatial binning done using 5 x 5 box filter for:', f]);
                 end
             end
@@ -173,14 +178,21 @@ function [d, status] = cadence_condition_data(d, opts)
             if isfield(d, 'analog1') && ~isempty(d.analog1)
                 [~, locs] = findpeaks(d.analog1);
             else
-                [~, locs] = auto_detect_peaks(d.CAM1);
+                % auto_detect_peaks returns a binary onset vector (one output)
+                locs = find(auto_detect_peaks(d.CAM1));
             end
-            ref_frame = locs(1,1) - 1;
-            for i = 1:d.num_files
-                f = sprintf('CAM%d', i);
-                d.(f) = trackCardiacMotion(d.(f), 'RefFrame', ref_frame);
+            if isempty(locs)
+                say('Motion correction skipped: no beat found to choose a reference frame.');
+            else
+                ref_frame = max(1, locs(1) - 1);
+                dm = d;       % commit only if every camera succeeds
+                for i = 1:d.num_files
+                    f = sprintf('CAM%d', i);
+                    dm.(f) = trackCardiacMotion(dm.(f), 'RefFrame', ref_frame);
+                end
+                d = dm;
+                say('Motion correction done to remove motion artifacts.');
             end
-            say('Motion correction done to remove motion artifacts.');
         else
             say('Motion correction option was NOT selected for signal processing');
         end
@@ -222,13 +234,23 @@ function [d, status] = cadence_condition_data(d, opts)
             [inv, conf] = check_polarity_paced(d.(cam_f), pacing, d.acqFreq, snr_mask);
             if isnan(conf) || abs(conf) < 0.20
                 [inv, conf] = check_signal_inversion(d.(cam_f), d.acqFreq, 'Mask', snr_mask);
+                % check_signal_inversion returns an UNSIGNED agreement in
+                % [0, 1]; sign it with the decision so the saved value means
+                % the same as check_polarity_paced's: + upright, - inverted,
+                % magnitude = how decisive.
+                conf = conf * (1 - 2*double(inv));
                 method = 'signal shape';
-                why = sprintf('signal shape, confidence %.2f (no usable pacing)', conf);
+                source = 'shape';
+                why = sprintf('signal shape, confidence %+.2f (no usable pacing)', conf);
             else
                 method = 'post-stimulus deflection';
-                why = sprintf('post-stimulus deflection, confidence %.2f', conf);
+                source = 'stimulus';
+                why = sprintf('post-stimulus deflection, confidence %+.2f', conf);
             end
-            d.(sprintf('CAM%d_polarity_confidence', i)) = conf;   % provenance, saved with the file
+            % Provenance, saved with the file. Signed as measured on the data
+            % BEFORE any flip: negative = the recording arrived inverted.
+            d.(sprintf('CAM%d_polarity_confidence', i)) = conf;
+            d.(sprintf('CAM%d_polarity_source', i))     = source;   % 'stimulus' | 'shape'
 
             if inv
                 d.(cam_f) = 1 - d.(cam_f);
