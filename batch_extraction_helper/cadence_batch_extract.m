@@ -255,6 +255,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
             eo = o.ExtractOpts;  eo.Log = @(s) logf(['   ' s]);
             [d, st] = cadence_extract_features(d, eo);
             row.Features = string(strjoin(st.features, ' '));
+            row.Filter   = filter_label(d);
             row.Errors   = string(strjoin(st.errors, ' | '));
 
             % save (write to a temp name, then rename, so a killed run never
@@ -453,9 +454,25 @@ function [names, types] = row_schema()
     L = cadence_metric_labels();
     mets = [L(:,1), repmat({'double'}, size(L,1), 1)];
     tail  = {'Features','string'; 'Errors','string'; 'Elapsed_s','double'; 'Extracted_on','string'; ...
-             'Maps_pdf','string'};
+             'Maps_pdf','string'; 'Filter','string'};
     all = [meta; mets; tail];
     names = all(:,1);  types = all(:,2);
+end
+
+function s = filter_label(d)
+% "50 Hz" for a single-band run; "hybrid 100/50 Hz" when rise times and
+% DF/RI/OI came from the conditioned band and everything else from the low band.
+    s = "";
+    if ~isfield(d, 'filter_bands') || ~isstruct(d.filter_bands), return; end
+    fb = d.filter_bands;
+    hz = @(x) strtrim(sprintf('%g', x));
+    if strcmp(fb.mode, 'hybrid')
+        s = string(sprintf('hybrid %s/%s Hz', hz(fb.conditioned_hz), hz(fb.lowband_hz)));
+    elseif ~isempty(fb.conditioned_hz) && fb.conditioned_hz > 0
+        s = string(sprintf('%s Hz', hz(fb.conditioned_hz)));
+    elseif ~isempty(fb.conditioned_hz)
+        s = "none";
+    end
 end
 
 function m = camera_meta(row)

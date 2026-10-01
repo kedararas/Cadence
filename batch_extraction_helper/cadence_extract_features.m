@@ -62,6 +62,24 @@ function [d, status] = cadence_extract_features(d, opts)
 %                     cams) in the standard 6-slot layout (default 50, i.e.
 %                     APD50 and CaTD50).  These fields are an ADDITION to what
 %                     the app writes; pass [] to omit them.
+%     LowBand         'auto' (default) | true | false.  HYBRID FILTER (batch only).
+%                     The conditioned file must carry CAM<n>_average_lowband
+%                     (cadence_condition_data 'LowBandHz'). Then:
+%                       high band (FilterHz, as conditioned): AP and Ca rise
+%                         times, DF/RI/OI -- they need upstroke / harmonic content;
+%                       low band (LowBandHz): activation, APD, repolarization,
+%                         CV, Vm-Ca delay, CaTD, Ca decay, tau, extra levels,
+%                         alternans -- noise-limited, and the band the manual
+%                         validation used.
+%                     The high-band stages run first on the stacks as
+%                     conditioned; the stacks are then low-passed IN PLACE
+%                     (CAM<n>) and CAM<n>_average is replaced by the low-band
+%                     average, so the returned/saved metrics carry low-band
+%                     stacks (the conditioned file keeps the high band). The
+%                     high-band average is kept as CAM<n>_average_highband.
+%                     'auto' uses the hybrid whenever every extracted camera
+%                     has a low-band average; true requires it; false ignores it.
+%                     What was done is saved as metrics.filter_bands.
 %     Log             function handle for messages (default @(s) fprintf('%s\n',s))
 %
 %   status
@@ -126,27 +144,46 @@ function [d, status] = cadence_extract_features(d, opts)
     status.timing.masks = toc(t0);
 
     % ---- stages, in the app's order ---------------------------------------
+    % Each stage takes the CURRENT data (the hybrid filter swaps stacks mid-run).
     stages = { ...
-        'act_times',     P.DoActTime,    @() stage_act_time(d, P); ...
-        'apd_data',      P.DoAPD,        @() stage_v_apd(d, P); ...
-        'rep_data',      P.DoRep,        @() stage_v_rep(d, P); ...
-        'ap_rise_times', P.DoAPRise,     @() stage_v_rise(d, P); ...
-        'local_cv',      P.DoCV,         @() stage_cv(d, P); ...
-        'vc_delay',      P.DoVCDelay,    @() stage_v_c_delay(d, P); ...
-        'ca_data',       P.DoCaTD,       @() stage_c_apd(d, P); ...
-        'ca_rep_data',   P.DoCaDecay,    @() stage_c_rep(d, P); ...
-        'ca_rise_times', P.DoCaRise,     @() stage_c_rise(d, P); ...
-        'ca_tau',        P.DoTau,        @() stage_tau(d, P); ...
-        'extra_apd',     ~isempty(P.ExtraAPDLevels), @() stage_extra_apd(d, P); ...
-        'complexity_data', P.DoComplexity, @() stage_complexity(d, P); ...
-        'alternans_data',  P.DoAlternans,  @() stage_alternans(d, P)};
+        'act_times',     P.DoActTime,    @(dd) stage_act_time(dd, P); ...
+        'apd_data',      P.DoAPD,        @(dd) stage_v_apd(dd, P); ...
+        'rep_data',      P.DoRep,        @(dd) stage_v_rep(dd, P); ...
+        'ap_rise_times', P.DoAPRise,     @(dd) stage_v_rise(dd, P); ...
+        'local_cv',      P.DoCV,         @(dd) stage_cv(dd, P); ...
+        'vc_delay',      P.DoVCDelay,    @(dd) stage_v_c_delay(dd, P); ...
+        'ca_data',       P.DoCaTD,       @(dd) stage_c_apd(dd, P); ...
+        'ca_rep_data',   P.DoCaDecay,    @(dd) stage_c_rep(dd, P); ...
+        'ca_rise_times', P.DoCaRise,     @(dd) stage_c_rise(dd, P); ...
+        'ca_tau',        P.DoTau,        @(dd) stage_tau(dd, P); ...
+        'extra_apd',     ~isempty(P.ExtraAPDLevels), @(dd) stage_extra_apd(dd, P); ...
+        'complexity_data', P.DoComplexity, @(dd) stage_complexity(dd, P); ...
+        'alternans_data',  P.DoAlternans,  @(dd) stage_alternans(dd, P)};
 
-    for s = 1:size(stages, 1)
+    % ---- hybrid filter: which band each stage uses ---------------------------
+    high_band = {'ap_rise_times', 'ca_rise_times', 'complexity_data'};
+    [hybrid, lowHz, condHz] = resolve_hybrid(d, P);
+    if hybrid
+        is_high = ismember(stages(:,1), high_band);
+        order = [find(is_high); find(~is_high)];       % high band first, then swap
+        logf(sprintf('Hybrid filter: rise times and DF/RI/OI at [0, %g Hz]; all other metrics at [0, %g Hz].', condHz, lowHz));
+    else
+        order = (1:size(stages, 1))';
+    end
+
+    swapped = false;
+    for s = order'
         name = stages{s,1};
+        if hybrid && ~swapped && ~ismember(name, high_band)
+            t0 = tic;
+            d = to_low_band(d, P, lowHz);
+            swapped = true;
+            logf(sprintf('Switched stacks to the low band [0, %g Hz] in %.1f s.', lowHz, toc(t0)));
+        end
         if ~stages{s,2}, continue; end
         t0 = tic;
         try
-            em = stages{s,3}();               % struct of ep_metrics fields to merge
+            em = stages{s,3}(d);               % struct of ep_metrics fields to merge
             fn = fieldnames(em);
             for k = 1:numel(fn)
                 if isempty(em.(fn{k})), continue; end     % stage produced nothing for this field
@@ -163,6 +200,18 @@ function [d, status] = cadence_extract_features(d, opts)
         end
         status.timing.(name) = toc(t0);
     end
+    if hybrid && ~swapped, d = to_low_band(d, P, lowHz); end   % keep the saved stacks consistent
+
+    if hybrid
+        d.filter_bands = struct('mode', 'hybrid', 'conditioned_hz', condHz, 'lowband_hz', lowHz, ...
+            'highband_metrics', {high_band}, ...
+            'lowband_metrics', {setdiff(stages(:,1), high_band, 'stable')'}, ...
+            'saved_stacks', 'lowband (CAM<n>, CAM<n>_average); CAM<n>_average_highband = conditioned band');
+    else
+        d.filter_bands = struct('mode', 'single', 'conditioned_hz', condHz, 'lowband_hz', [], ...
+            'highband_metrics', {{}}, 'lowband_metrics', {{}}, 'saved_stacks', 'as conditioned');
+    end
+    status.filter_bands = d.filter_bands;
 
     % ---- compile_data: what SAVE DATA writes --------------------------------
     d.window     = [];
@@ -174,6 +223,60 @@ end
 % =========================================================================
 %                              OPTIONS
 % =========================================================================
+function [hybrid, lowHz, condHz] = resolve_hybrid(d, P)
+% Decide whether to run the hybrid filter and with which cutoffs.
+    condHz = []; lowHz = [];
+    if isfield(d, 'temporal_filter') && isstruct(d.temporal_filter)
+        condHz = d.temporal_filter.conditioned_hz;
+        lowHz  = d.temporal_filter.lowband_hz;
+    end
+    cams = unique([P.VoltageCams(:); P.CalciumCams(:); P.ComplexityCams(:)])';
+    have = ~isempty(cams) && all(arrayfun(@(i) isfield(d, sprintf('CAM%d_average_lowband', i)) && ...
+                                        ~isempty(d.(sprintf('CAM%d_average_lowband', i))), cams));
+    want = P.LowBand;
+    if ischar(want) || isstring(want)
+        if ~strcmpi(want, 'auto'), error('cadence_extract_features:option', 'LowBand must be ''auto'', true or false.'); end
+        hybrid = have;
+    else
+        hybrid = logical(want);
+        if hybrid && ~have
+            error('cadence_extract_features:lowband', ['LowBand = true but not every extracted camera has ' ...
+                  'CAM<n>_average_lowband; condition with cadence_condition_data(..., ''LowBandHz'', 50).']);
+        end
+    end
+    if hybrid && (isempty(lowHz) || lowHz <= 0)
+        error('cadence_extract_features:lowband', 'Low-band averages present but temporal_filter.lowband_hz is missing.');
+    end
+end
+
+
+function d = to_low_band(d, P, lowHz)
+% Low-pass every extracted camera's stack in place and make the low-band
+% average the one all later stages read; keep the conditioned-band average.
+    cams = unique([P.VoltageCams(:); P.CalciumCams(:); P.ComplexityCams(:)])';
+    for i = cams
+        f = sprintf('CAM%d', i);
+        d.([f '_average_highband']) = d.([f '_average']);
+        d.([f '_average'])          = d.([f '_average_lowband']);
+        d = rmfield(d, [f '_average_lowband']);
+        d.(f) = filter_masked(d.(f), P.acqFreq, lowHz);
+    end
+end
+
+
+function Y = filter_masked(X, fs, hz)
+% filter_data (filtfilt) rejects non-finite input, and the conditioned stacks
+% are NaN outside the tissue mask. Filter with those samples zeroed, then put
+% the NaNs back, so masked pixels stay masked and tissue pixels are filtered
+% exactly as filter_data would (each pixel is filtered independently in time).
+    bad = ~isfinite(X);
+    if ~any(bad(:)), Y = filter_data(X, fs, hz); return; end
+    X(bad) = 0;
+    Y = filter_data(X, fs, hz);
+    Y(bad) = NaN;
+end
+
+
 function P = resolve_options(d, opts)
     def = struct( ...
         'FOV_mm', 20, ...
@@ -187,6 +290,7 @@ function P = resolve_options(d, opts)
         'DoCaRise', true, 'DoTau', true, 'DoAlternans', true, 'DoComplexity', true, ...
         'ComplexityCams', [], ...
         'ExtraAPDLevels', 50, ...
+        'LowBand', 'auto', ...
         'Log', @(s) fprintf('%s\n', s));
     P = def;
     fn = fieldnames(opts);

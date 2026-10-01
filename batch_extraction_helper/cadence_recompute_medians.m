@@ -63,12 +63,20 @@ function T = cadence_recompute_medians(output_root, varargin)
                    'CL_ms', m.CL_ms, 'Tag', m.tag, 'Run', m.run, 'Rat', m.rat, 'Date', m.date, 'Clock', m.clock, ...
                    'Stim', m.stim, 'File', string([m.base '.mat']), 'Source', "", 'Metrics_file', string(f));
         for q = 1:size(L,1), r.(L{q,1}) = NaN; end
-        r.Features = ""; r.Errors = ""; r.Elapsed_s = NaN; r.Extracted_on = ""; r.Maps_pdf = "";
+        r.Features = ""; r.Errors = ""; r.Elapsed_s = NaN; r.Extracted_on = ""; r.Maps_pdf = ""; r.Filter = "";
         try
             S = load(f);
             if isfield(S, 'cmos_all_data'), d = S.cmos_all_data; else, fn = fieldnames(S); d = S.(fn{1}); end
             clear S
             if isfield(d, 'ep_metrics'), r.Features = string(strjoin(fieldnames(d.ep_metrics)', ' ')); end
+            if isfield(d, 'filter_bands') && isstruct(d.filter_bands)
+                fb = d.filter_bands;
+                if strcmp(fb.mode, 'hybrid')
+                    r.Filter = string(sprintf('hybrid %g/%g Hz', fb.conditioned_hz, fb.lowband_hz));
+                elseif ~isempty(fb.conditioned_hz)
+                    r.Filter = string(sprintf('%g Hz', fb.conditioned_hz));
+                end
+            end
             v = cadence_recording_medians(d);
             fn = fieldnames(v);
             for q = 1:numel(fn), r.(fn{q}) = v.(fn{q}); end

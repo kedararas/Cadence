@@ -45,8 +45,15 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
 %                    default 1000 (the Data Conversion app's field default).
 %                    .gsh headers always carry it.
 %     'ConditionOpts' struct for cadence_condition_data (Drift, SVD, SVDRank,
-%                    Binning, BinSize, FilterHz, Motion, Normalize, Ensemble,
-%                    MaskFloor).  Default struct() = the app's defaults.
+%                    Binning, BinSize, FilterHz, LowBandHz, Motion, Normalize,
+%                    Ensemble, MaskFloor).  Default struct() = the app's defaults.
+%                    HYBRID FILTER (batch only):
+%                      struct('FilterHz', 100, 'LowBandHz', 50)
+%                    conditions at 100 Hz and also stores a 50 Hz ensemble
+%                    average; extraction then takes rise times and DF/RI/OI
+%                    from the 100 Hz data and every other metric from the
+%                    50 Hz data. The medians CSV / workbook 'Filter' column
+%                    records "hybrid 100/50 Hz".
 %     'ExtractOpts'  struct for cadence_extract_features (FOV_mm, VoltageCams,
 %                    CalciumCams, ...).  Set the camera roles for anything but a
 %                    CAM1-voltage / CAM2-calcium rig; see cadence_extract_features.

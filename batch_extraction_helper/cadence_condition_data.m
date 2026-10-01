@@ -40,6 +40,18 @@ function [d, status] = cadence_condition_data(d, opts)
 %     Binning      false     B) SPATIAL BINNING (BinSize 3 | 5 | 7 | 9)
 %     BinSize      3
 %     FilterHz     50        C) TEMPORAL FILTERING [0, FilterHz]; [] or 0 = NONE
+%     LowBandHz    []        HYBRID FILTER (batch only). When set (e.g. 50 with
+%                            FilterHz 100), a second ensemble average is made
+%                            from the stack low-passed at [0, LowBandHz] and
+%                            saved as CAM<n>_average_lowband. It is taken before
+%                            the final SNR mask, from the same normalized,
+%                            polarity-corrected stack and beat windows as
+%                            CAM<n>_average, so it equals the average a
+%                            FilterHz = LowBandHz run would produce (up to the
+%                            cascade of the two low-passes). cadence_extract_features
+%                            then measures durations/activation/CV/alternans in
+%                            the low band and rise times/DF/RI/OI in the
+%                            FilterHz band. Requires Ensemble and LowBandHz < FilterHz.
 %     Motion       false     G) MOTION ARTIFACT CORRECTION
 %     Normalize    true      E) DATA NORMALIZATION
 %     Ensemble     true      F) ENSEMBLE AVERAGING
@@ -282,6 +294,15 @@ function [d, status] = cadence_condition_data(d, opts)
                 d.(sprintf('CAM%d_average', i)) = ensembleAverageFull(d.(sprintf('CAM%d', i)), pacing);
             end
             status.pacing = ~isempty(pacing);
+            if ~isempty(P.LowBandHz) && P.LowBandHz > 0
+                % hybrid filter: a low-band average from the same stack and the
+                % same beat detection, BEFORE the final mask blanks any pixel
+                for i = 1:d.num_files
+                    f = sprintf('CAM%d', i);
+                    d.([f '_average_lowband']) = ensembleAverageFull(filter_data(d.(f), d.acqFreq, P.LowBandHz), pacing);
+                end
+                say(sprintf('Low-band ensemble average [0, %g Hz] saved for the hybrid filter (CAM<n>_average_lowband).', P.LowBandHz));
+            end
             if isempty(pacing)
                 say('Ensemble averaging completed (peaks auto-detected from data).');
             else
@@ -294,6 +315,11 @@ function [d, status] = cadence_condition_data(d, opts)
         fail('ensemble', ME);
     end
     status.timing.ensemble = toc(t0);
+
+    % Which temporal filter produced this file (read by cadence_extract_features).
+    hz = P.FilterHz; if isempty(hz), hz = 0; end
+    lb = P.LowBandHz; if isempty(lb) || ~P.Ensemble, lb = []; end
+    d.temporal_filter = struct('conditioned_hz', hz, 'lowband_hz', lb);
 
     % ---- 10) SNR mask (always) --------------------------------------------
     t0 = tic;
@@ -343,7 +369,7 @@ end
 
 function P = resolve_options(opts)
     P = struct('Drift', true, 'SVD', true, 'SVDRank', 8, 'Binning', false, 'BinSize', 3, ...
-               'FilterHz', 50, 'Motion', false, 'Normalize', true, 'Ensemble', true, ...
+               'FilterHz', 50, 'LowBandHz', [], 'Motion', false, 'Normalize', true, 'Ensemble', true, ...
                'MaskFloor', 2, 'Name', '', 'Log', @(s) fprintf('%s\n', s));
     fn = fieldnames(opts);
     for k = 1:numel(fn)
@@ -356,4 +382,12 @@ function P = resolve_options(opts)
         error('cadence_condition_data:option', 'BinSize must be 3, 5, 7 or 9 (got %g)', P.BinSize);
     end
     if isempty(P.MaskFloor), P.MaskFloor = 2; end
+    if ~isempty(P.LowBandHz) && P.LowBandHz > 0
+        if ~P.Ensemble
+            error('cadence_condition_data:option', 'LowBandHz needs Ensemble = true (it stores a low-band ensemble average).');
+        end
+        if ~isempty(P.FilterHz) && P.FilterHz > 0 && P.LowBandHz >= P.FilterHz
+            error('cadence_condition_data:option', 'LowBandHz (%g) must be below FilterHz (%g).', P.LowBandHz, P.FilterHz);
+        end
+    end
 end
