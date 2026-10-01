@@ -64,6 +64,13 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
 %     'Resume'       true (default): skip what is already done (see above).
 %                    false: re-extract every recording; existing conditioned
 %                    and converted files are still reused.
+%                    A recording conditioned or extracted with a different
+%                    temporal filter than ConditionOpts asks for is NOT done:
+%                    it is re-conditioned (from the converted file) and
+%                    re-extracted, so one medians table never mixes filters.
+%                    Files from before the filter was recorded count as
+%                    single-band.  Excluded (arrhythmia) recordings keep an
+%                    existing conditioned file whatever its filter.
 %     'Recondition'  true: rebuild the conditioned files (from the converted
 %                    files when present) and re-extract.  Default false.
 %     'Reconvert'    true: rebuild everything from the raw files.  Default false.
@@ -171,7 +178,10 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
 
     if ~isfolder(processed_root), mkdir(processed_root); end
     if ~isfolder(metrics_root),   mkdir(metrics_root);   end
-    loader = @(job, logf) pipeline_loader(job, logf, o);
+    % Conditioned files made with a different temporal filter are re-conditioned
+    % before extraction (and their medians redone), so one run never mixes filters.
+    want_filter = requested_filter(o.ConditionOpts);
+    loader      = @(job, logf) pipeline_loader(job, logf, o, want_filter);
 
     % ---- excluded recordings: convert + condition only ----------------------------
     fid = fopen(o.LogFile, 'a');
@@ -191,7 +201,7 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
             job = jobs(idx(jj));
             logf(sprintf('[excluded %d/%d] %s', jj, numel(idx), job.source));
             try
-                loader(job, logf);
+                pipeline_loader(job, logf, o, []);    % not extracted: an existing file is kept as is
             catch ME
                 logf(sprintf('   FAILED: %s', ME.message));
             end
@@ -204,21 +214,27 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
         'Resume', o.Resume, 'ExcludePattern', o.ExcludePattern, 'ExtractOpts', o.ExtractOpts, ...
         'NormalizeZT', o.NormalizeZT, 'MaxFiles', o.MaxFiles, 'BuildSummary', o.BuildSummary, ...
         'SaveMetrics', o.SaveMetrics, 'MediansFile', o.MediansFile, 'SummaryFile', o.SummaryFile, ...
-        'LogFile', o.LogFile, 'LogFcn', o.LogFcn, 'ShouldStop', o.ShouldStop, 'SaveMapsPDF', o.SaveMapsPDF);
+        'LogFile', o.LogFile, 'LogFcn', o.LogFcn, 'ShouldStop', o.ShouldStop, 'SaveMapsPDF', o.SaveMapsPDF, ...
+        'ExpectFilter', want_filter.label);
 end
 
 
 % =========================================================================
-function d = pipeline_loader(job, logf, o)
+function d = pipeline_loader(job, logf, o, want)
 % Return the conditioned cmos_all_data for a job: load it if it exists,
 % otherwise condition the converted .mat if it exists, otherwise convert the
 % raw folder first.  Every product is saved as it is made.
+% want (from requested_filter, or [] for no check): an existing conditioned
+% file made with a different temporal filter is re-conditioned.
     name = job.file;
     if ~o.Recondition && isfile(job.conditioned_file)
         t0 = tic;
         d = load_struct(job.conditioned_file);
         logf(sprintf('   conditioned file exists, loaded in %.0f s: %s', toc(t0), job.conditioned_file));
-        return;
+        [same, have] = filter_matches(d, want);
+        if same, return; end
+        logf(sprintf('   conditioned with filter %s but this run asks for %s: re-conditioning', have, want.label));
+        clear d
     end
 
     t_all = tic;
@@ -356,6 +372,43 @@ function jobs = discover_raw(raw_root, processed_root, metrics_root, o)
         end
         [~, ord] = sortrows([num2cell(key(:,1)), num2cell(key(:,2)), relk, num2cell(key(:,3))]);
         jobs = jobs(ord);
+    end
+end
+
+function want = requested_filter(co)
+% The temporal filter a ConditionOpts struct asks for, with the label
+% cadence_batch_extract writes to the medians 'Filter' column.  Defaults as
+% in cadence_condition_data (FilterHz 50, LowBandHz [], Ensemble true).
+    hz = 50;  lb = [];  ens = true;
+    if isfield(co, 'FilterHz'),  hz  = co.FilterHz;  end
+    if isfield(co, 'LowBandHz'), lb  = co.LowBandHz; end
+    if isfield(co, 'Ensemble'),  ens = co.Ensemble;  end
+    if isempty(hz), hz = 0; end
+    if isempty(lb) || lb <= 0 || ~ens, lb = []; end
+    want = struct('conditioned_hz', hz, 'lowband_hz', lb, 'label', filter_text(hz, lb));
+end
+
+function [same, have] = filter_matches(d, want)
+% Was conditioned file d made with the requested filter?  Files from before
+% d.temporal_filter existed are single-band (filter unknown): accepted for a
+% single-band request, as before, but never for a hybrid one.
+    same = true;  have = 'unknown (older file)';
+    if isempty(want), return; end
+    if ~isfield(d, 'temporal_filter') || ~isstruct(d.temporal_filter)
+        same = isempty(want.lowband_hz);
+        return;
+    end
+    tf = d.temporal_filter;
+    have = filter_text(tf.conditioned_hz, tf.lowband_hz);
+    same = strcmp(have, want.label);
+end
+
+function s = filter_text(hz, lb)
+% Same wording as filter_label in cadence_batch_extract.
+    f = @(x) strtrim(sprintf('%g', x));
+    if ~isempty(lb), s = sprintf('hybrid %s/%s Hz', f(hz), f(lb));
+    elseif hz > 0,   s = sprintf('%s Hz', f(hz));
+    else,            s = 'none';
     end
 end
 

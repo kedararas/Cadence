@@ -70,6 +70,12 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 %                    skipped by Resume but have no PDF yet get one rendered
 %                    from their saved metrics file, without re-extraction.
 %                    Default false.
+%     'ExpectFilter' medians 'Filter' label the run is meant to produce, e.g.
+%                    "hybrid 100/50 Hz" or "50 Hz" (cadence_batch_pipeline
+%                    sets it).  Resume then redoes recordings extracted with a
+%                    different filter instead of skipping them; rows from
+%                    before the Filter column count as single-band.  Default
+%                    '' (no check).
 %
 %   Returns the medians table (one row per recording).
 %
@@ -98,6 +104,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     p.addParameter('LogFcn', [], @(x) isempty(x) || isa(x, 'function_handle'));
     p.addParameter('ShouldStop', [], @(x) isempty(x) || isa(x, 'function_handle'));
     p.addParameter('SaveMapsPDF', false, @islogical);
+    p.addParameter('ExpectFilter', '', @(x) ischar(x) || isstring(x));
     p.parse(varargin{:});
     o = p.Results;
     o.Folders = cellstr(o.Folders);  o.Files = cellstr(o.Files);
@@ -170,12 +177,25 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     done_metrics = cellfun(@(r) char(r.Metrics_file), rows, 'UniformOutput', false);
     find_row = @(job) find(strcmp(done_sources, job.source) | strcmp(done_metrics, job.metrics_file), 1);
 
-    todo = false(numel(jobs), 1);
+    % With ExpectFilter set (the pipeline sets it), a recording extracted with a
+    % different temporal filter is redone rather than skipped, so a resumed run
+    % never mixes filters.  Rows from before the Filter column are single-band
+    % (filter unknown): kept for a single-band run, redone for a hybrid one.
+    expect = string(o.ExpectFilter);
+    filter_ok = @(f) expect == "" || f == expect || (f == "" && ~startsWith(expect, "hybrid"));
+    todo = false(numel(jobs), 1);  refilter = 0;
     for j = 1:numel(jobs)
-        already = ~isempty(find_row(jobs(j))) && isfile(jobs(j).metrics_file);
+        r = find_row(jobs(j));
+        already = ~isempty(r) && isfile(jobs(j).metrics_file);
+        if already && ~filter_ok(rows{r}.Filter)
+            already = false;  refilter = refilter + 1;
+        end
         todo(j) = ~(o.Resume && already);
     end
     note(sprintf('%d to process, %d skipped (already done)', nnz(todo), nnz(~todo)));
+    if o.Resume && refilter > 0
+        note(sprintf('%d of them were extracted with a different filter than %s and are redone', refilter, expect));
+    end
 
     if o.DryRun
         for j = find(todo)'

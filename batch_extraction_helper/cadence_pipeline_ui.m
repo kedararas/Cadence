@@ -87,7 +87,9 @@ function fig = cadence_pipeline_ui()
     h.SVD      = dd(g4, 1, 1, 'A) SVD DENOISING', {'YES', 'NO'}, 'YES');
     h.Binning  = dd(g4, 1, 3, 'B) BINNING', {'NO', 'YES'}, 'NO');
     h.BinSize  = dd(g4, 1, 5, 'B) BINNING BOX', {'3 x 3', '5 x 5', '7 x 7', '9 x 9'}, '3 x 3');
-    h.Filter   = dd(g4, 1, 7, 'C) TEMPORAL FILTER (Hz)', {'NONE', '[0, 150]', '[0, 100]', '[0, 75]', '[0, 50]'}, '[0, 50]');
+    % HYBRID 100/50: condition at [0, 100] Hz and keep a [0, 50] Hz ensemble average;
+    % rise times and DF/RI/OI come from 100 Hz, every other metric from 50 Hz.
+    h.Filter   = dd(g4, 1, 7, 'C) TEMPORAL FILTER (Hz)', {'HYBRID 100/50', 'NONE', '[0, 150]', '[0, 100]', '[0, 75]', '[0, 50]'}, 'HYBRID 100/50');
     h.Drift    = dd(g4, 2, 1, 'D) DRIFT CORRECTION', {'NO', 'YES'}, 'YES');
     h.Normalize= dd(g4, 2, 3, 'E) NORMALIZATION', {'NO', 'YES'}, 'YES');
     h.Ensemble = dd(g4, 2, 5, 'F) ENSEMBLE AVERAGING', {'NO', 'YES'}, 'YES');
@@ -130,7 +132,7 @@ function fig = cadence_pipeline_ui()
         'STEP 1) Select the parent folder of the raw recordings. Every sub-folder (any depth) that holds .tif volumes or SciMedia .gsh/.gsd pairs is one recording. Optionally pick sub-folders to restrict the run.'; ''; ...
         'STEP 2) Select the processed folder: converted .mat files go to converted/, conditioned files to conditioned/, with a conditioning log.'; ''; ...
         'STEP 3) Select the metrics output folder: -metrics.mat files, the per-recording medians CSV, the Excel summary and the batch log.'; ''; ...
-        'STEP 4) Check the conditioning settings (defaults = recommended: SVD denoising, [0, 50] Hz filter, drift correction, normalization, ensemble averaging), then set the SIGNAL type of each camera (VOLTAGE, CALCIUM, or NOT USED for cameras the recordings do not have). The same assignment applies to every recording in the run, so process rigs with different camera layouts in separate runs. Features are extracted with the adaptive SNR mask on the ensemble beat. The run resumes where it stopped.'};
+        'STEP 4) Check the conditioning settings (defaults = recommended: SVD denoising, HYBRID 100/50 filter, drift correction, normalization, ensemble averaging; HYBRID conditions at [0, 100] Hz and keeps a [0, 50] Hz ensemble average: rise times and DF/RI/OI come from 100 Hz, every other metric from 50 Hz, and needs ensemble averaging), then set the SIGNAL type of each camera (VOLTAGE, CALCIUM, or NOT USED for cameras the recordings do not have). The same assignment applies to every recording in the run, so process rigs with different camera layouts in separate runs. Features are extracted with the adaptive SNR mask on the ensemble beat. The run resumes where it stopped.'};
 
     fig.UserData = struct('h', h, 'stop', false, 'running', false, 'last_table', table());
     fig.Visible = 'on';
@@ -249,8 +251,17 @@ function run_pressed(fig)
     co.Normalize = strcmp(h.Normalize.Value, 'YES');
     co.Ensemble  = strcmp(h.Ensemble.Value, 'YES');
     co.Motion    = strcmp(h.Motion.Value, 'YES');
-    fz = regexp(h.Filter.Value, '\[0,\s*(\d+)\]', 'tokens', 'once');
-    if isempty(fz), co.FilterHz = []; else, co.FilterHz = str2double(fz{1}); end
+    if startsWith(h.Filter.Value, 'HYBRID')
+        co.FilterHz = 100;  co.LowBandHz = 50;
+        if ~co.Ensemble
+            console(fig, 'The HYBRID filter needs ENSEMBLE AVERAGING = YES (it stores a 50 Hz ensemble average). Nothing was run.');
+            return;
+        end
+    else
+        fz = regexp(h.Filter.Value, '\[0,\s*(\d+)\]', 'tokens', 'once');
+        if isempty(fz), co.FilterHz = []; else, co.FilterHz = str2double(fz{1}); end
+        co.LowBandHz = [];
+    end
     types = arrayfun(@(k) h.Cam(k).Value, 1:4, 'UniformOutput', false);
     if ~h.DryRun.Value
         if any(strcmp(types, 'SELECT...'))

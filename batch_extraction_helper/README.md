@@ -85,6 +85,16 @@ a console that echoes every batch log line. If the processed or metrics
 folder is left empty, `<raw folder>_processed` and `<raw folder>_metrics`
 next to the raw folder are used.
 
+The window's TEMPORAL FILTER defaults to **HYBRID 100/50**: the data are
+conditioned at [0, 100] Hz and a [0, 50] Hz ensemble average is kept as well.
+AP/Ca rise times and DF/RI/OI then come from the 100 Hz data, which the 50 Hz
+filter slows and smooths, and every other metric from the 50 Hz data, which
+keeps repolarization-based metrics at their 50 Hz noise level. The medians
+`Filter` column reads `hybrid 100/50 Hz`. It needs ensemble averaging. Pick a
+single band (e.g. `[0, 50]`) to reproduce the app exactly. A conditioned file
+made this way holds the 100 Hz stacks, so opening it in the apps gives
+100 Hz results.
+
 Conditioning reproduces the app's EXECUTE SIGNAL CONDITIONING with its
 dropdown defaults, in the app's stage order: SNR map, drift correction, SVD
 denoising (rank 8, 5 x 5 binning fallback), temporal filter [0, 50] Hz,
@@ -93,7 +103,9 @@ ensemble averaging on `analog1` (auto-detected beats when there is no pacing
 channel), SNR >= 2 tissue mask, `conditioned` stamp and QC log. Spatial
 binning and motion correction are off, as in the app. Change any of these with
 `'ConditionOpts'` (fields `Drift, SVD, SVDRank, Binning, BinSize, FilterHz,
-Motion, Normalize, Ensemble, MaskFloor`, see `cadence_condition_data.m`).
+LowBandHz, Motion, Normalize, Ensemble, MaskFloor`, see `cadence_condition_data.m`;
+the hybrid is `struct('FilterHz', 100, 'LowBandHz', 50)`; the command-line
+default stays the app's single [0, 50] Hz band).
 Extraction uses the per-camera adaptive SNR mask and the ensemble beat, as
 described below; `'ExtractOpts'` passes through (FOV_mm etc.). `.tif`
 recordings carry no frame rate; `'SamplingHz'` supplies it (default 1000 Hz,
@@ -101,7 +113,11 @@ the app's field default). `.gsh` headers always carry it.
 
 The run is resumable at every stage: a recording already in the medians CSV
 with its metrics file is skipped; one with a conditioned file is only
-re-extracted; one with a converted file is only re-conditioned. `'Resume',
+re-extracted; one with a converted file is only re-conditioned. A recording
+conditioned or extracted with a different temporal filter than the run asks
+for is re-conditioned and re-extracted rather than skipped, so one medians
+table never mixes filters (files from before the filter was recorded count as
+single-band). `'Resume',
 false` re-extracts everything from the conditioned files, `'Recondition',
 true` rebuilds the conditioned files from the converted ones (use this after
 changing `ConditionOpts`; a conditioned file is never conditioned again),
