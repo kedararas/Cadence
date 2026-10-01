@@ -1,7 +1,10 @@
-function L = cadence_metric_labels()
+function [L, arr] = cadence_metric_labels()
 %CADENCE_METRIC_LABELS  Master list of per-recording summary metrics.
 %
 %   L = cadence_metric_labels()  ->  N x 3 cell {name, label, description}
+%   [L, arr] = cadence_metric_labels()  ->  arr = names of the metrics only an
+%   ARRHYTHMIA recording has (wavefront / rotor dynamics, beat CV); summaries of
+%   paced recordings leave them out.
 %
 %   name   : valid MATLAB identifier used as a table variable / struct field
 %   label  : spreadsheet column header (unit in square brackets)
@@ -78,6 +81,23 @@ function L = cadence_metric_labels()
     'ca_diast_bw',       'Ca diastolic level (beat-windowed)',   'analyzeCaTransientAlternans diastolic_beat: per-beat trough level in the conditioned signal units; rises when the transient does not relax within the cycle';
     'ca_ensemble_valid', 'Ca ensemble metrics valid (flag)',     'scalar: 1 when the ensemble-window Ca metrics pass every test: the app guard on the averaged beat (check_analysis_window: not wrapped, decay fraction >= 0.5), V-Ca delay >= 0, CaTD valid fraction >= 0.5, CaTD80 >= 15 ms, and within 50% of the beat-windowed CaTD80 when available; 0 = treat Ca decay time / CaTD / Ca rise / tau / V-Ca delay as invalid';
     'v_ensemble_valid',  'V ensemble metrics valid (flag)',      'scalar: 1 when the ensemble-window V metrics pass every test: the app guard on the averaged beat, APD valid fraction >= 0.5, APD80 >= 10 ms, and within 50% of the beat-windowed APD80 when available';
+    % ---- arrhythmia dynamics (arrhythmia recordings, voltage camera) ---------
+    % Rates are events per second of recording; lifespans in ms.
+    'wf_per_frame_v',    'Wavefronts per frame (V)',             'wavefront_data: mean over frames of the number of segmented wavefronts >= 3 mm (count_wavefronts wf_count row 2)';
+    'wf_rate_v',         'Wavefronts tracked per second (V)',    'scalar: tracked wavefronts (wf_dynamics.wf_size_duration rows) / recording duration';
+    'wf_life_ms_v',      'Wavefront lifespan (V) [ms]',          'scalar: median lifespan of the tracked wavefronts (wf_size_duration column 5)';
+    'wf_frac_rate_v',    'Wavefront fractionations per second (V)', 'scalar: wavefronts that ended by fragmenting (wf_fractionations) / duration';
+    'wf_collision_rate_v','Wavefront collisions per second (V)', 'scalar: wavefronts that ended by merging (wf_collisions) / duration';
+    'wf_expiry_rate_v',  'Wavefront terminations per second (V)', 'scalar: wavefronts that expired without fragmenting or merging (wf_blocks: block, or leaving the field) / duration';
+    'wf_breakthrough_rate_v','Wavefront breakthroughs per second (V)', 'scalar: wavefronts born with no parent away from the field edge (wf_breakthroughs) / duration';
+    'wf_reentry_rate_v', 'Reentrant wavefronts per second (V)',  'scalar: wavefronts flagged as reentry (wf_reentry; check_for_wf_reentry, unvalidated) / duration';
+    'ps_per_frame_v',    'Phase singularities per frame (V)',    'rotor_data: mean over frames of the cleaned PS count (count_ps ps_count row 2)';
+    'ps_rate_v',         'PS tracked per second (V)',            'scalar: tracked phase singularities (ps_dynamics.ps_info rows) / duration';
+    'ps_life_ms_v',      'PS lifespan (V) [ms]',                 'scalar: median lifespan of all tracked PS (ps_info column 3)';
+    'rotor_n_v',         'Stable rotors (V)',                    'scalar: PS tracks lasting >= 1.5 rotations (ps_dynamics.path rows), the stable rotors marked in Signal Analysis';
+    'rotor_life_max_ms_v','Longest stable rotor (V) [ms]',       'scalar: longest stable-rotor lifespan';
+    'rotor_frac_time_v', 'Time with a stable rotor (V)',         'scalar: fraction of frames with at least one stable-rotor PS (ps_dynamics.valid_ps)';
+    'beat_cv_v',         'Beat interval CV (V, unpaced)',        'scalar: coefficient of variation of the beat-to-beat interval of the tissue-mean trace, used to classify unpaced recordings (metrics.rhythm.beat_cv)';
     % ---- QC ----------------------------------------------------------------
     'n_beats',           'Beats analysed (alternans)',           'scalar: number of beats segmented from analog1 for the alternans analysis';
     'tissue_frac_v',     'Tissue fraction (V mask)',             'scalar: fraction of the frame inside the adaptive SNR mask, voltage camera';
@@ -90,4 +110,7 @@ function L = cadence_metric_labels()
     'capture_ratio',     'Capture ratio (DF / pacing rate)',     'scalar: voltage dominant frequency / measured pacing rate; ~1 = 1:1 capture, ~0.5 = 2:1 block. Functional refractory period = shortest CL still at ~1';
     'v_ca_identical',    'V and Ca maps identical (QC flag)',    'scalar: 1 if the APD80 map equals the CaTD80 map or the V and Ca activation maps are equal (would mean both cameras were read from the same data), else 0';
     };
+    arr = {'wf_per_frame_v', 'wf_rate_v', 'wf_life_ms_v', 'wf_frac_rate_v', 'wf_collision_rate_v', ...
+           'wf_expiry_rate_v', 'wf_breakthrough_rate_v', 'wf_reentry_rate_v', 'ps_per_frame_v', ...
+           'ps_rate_v', 'ps_life_ms_v', 'rotor_n_v', 'rotor_life_max_ms_v', 'rotor_frac_time_v', 'beat_cv_v'}';
 end

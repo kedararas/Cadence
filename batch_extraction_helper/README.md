@@ -79,7 +79,7 @@ other CADENCE modules: SELECT buttons for the raw, processed and metrics
 folders, a list of the raw folder's sub-folders to restrict the run (none
 selected = whole tree), the Signal Conditioning dropdowns with their defaults,
 the field of view, the run options (dry run, resume, re-condition,
-re-convert, keep converted files, condition arrhythmia-tagged recordings), a
+re-convert, keep converted files, RHYTHM: AUTO / ALL PACED / ALL ARRHYTHMIA), a
 RUN button, a STOP button that ends the run after the current recording, and
 a console that echoes every batch log line. If the processed or metrics
 folder is left empty, `<raw folder>_processed` and `<raw folder>_metrics`
@@ -126,9 +126,8 @@ changing `ConditionOpts`; a conditioned file is never conditioned again),
 the others. `'SaveConverted', false` skips writing the converted files if
 disk is short; re-conditioning then reads the raw files again.
 
-Arrhythmia-tagged recordings (see the next section) are converted and
-conditioned, so they are ready for the arrhythmia-dynamics stages, but not
-extracted; `'ConditionExcluded', false` skips them entirely. A conditioning
+Every recording is extracted with the metric set its rhythm calls for (see
+*Paced and arrhythmia recordings* below). A conditioning
 stage that throws fails the recording (nothing saved, `FATAL` in its row;
 `'StrictConditioning', false` saves and extracts anyway, as the app would).
 
@@ -155,15 +154,71 @@ does the same for a whole existing metrics tree (about 15 s per file to load
 plus a few seconds to render). `cadence_maps_pdf(metrics_struct, pdf_file)`
 renders one recording.
 
-## Excluded recordings
+## Paced and arrhythmia recordings
 
-Recordings whose file name contains an arrhythmia tag are not extracted
-(the pattern tolerates the misspellings present in the corpus, such as
-"Arhhythmia", while not matching "alternans" or "EAD"). They call for the
-arrhythmia-dynamics stages, not the paced metrics, and are listed in
-`cadence_excluded_recordings.csv` with ZT, experiment, condition and CL, and the
-onset sheet uses that list for the arrhythmia CL. Change or disable with
-`'ExcludePattern'` (both `cadence_batch_extract` and `cadence_recompute_medians`).
+Each recording is classified from its own data before extraction
+(`cadence_extract_features`, RHYTHM), because file-name tags are not always
+right:
+
+- **Stimulus present** (a regular train on `analog1`): the voltage dominant
+  frequency is compared with the pacing rate. Within max(5%, 0.55 FFT bin) is
+  1:1 capture, so the recording is **paced**. Anything else (2:1 block, lost
+  capture, an arrhythmia outlasting the drive) is **arrhythmia**.
+- **No stimulus**: an irregular rhythm (beat-interval CV of the tissue-mean
+  trace > 0.15, or median OI < 0.35) is **arrhythmia**. A regular one cannot
+  be told from sinus rhythm by the data alone: it is **arrhythmia** if the file
+  name carries an arrhythmia tag, otherwise **paced** (sinus/spontaneous).
+
+Paced recordings get every metric: voltage activation, rise, repolarization,
+APD80 and APD50, local CV (FOV), alternans and DF/RI/OI; calcium Vm-Ca delay
+(dual mapping), rise, decay, CaTD80 and CaTD50, tau and alternans.
+Arrhythmia recordings get voltage only: DF/RI/OI, then the phase movie,
+wavefront dynamics and phase-singularity/rotor dynamics, computed as the
+Feature Extraction app does and stored in the same `ep_metrics` fields, so
+Signal Analysis plays them. With the hybrid filter, DF/RI/OI use the 100 Hz
+data and phase, wavefronts and rotors the 50 Hz band (the band of Fig 5).
+
+The medians CSV records `Rhythm`, `Capture`, `Rhythm_basis` (the numbers
+behind the decision, plus a NOTE when the file name disagrees) and
+`Name_tag`. Arrhythmia recordings get their per-recording dynamics
+(wavefronts per frame, tracked wavefronts and PS per second, fractionation /
+collision / termination / breakthrough / reentry rates, PS lifespan, stable
+rotors, longest rotor, time with a rotor) in the workbook's **Arrhythmia**
+sheet; every other sheet summarizes the paced recordings. The alternans onset
+analysis treats classified arrhythmia like a file tag.
+
+To overrule the classification for particular recordings, put
+`cadence_rhythm_overrides.csv` (columns `File`, `Rhythm` = paced | arrhythmia)
+in the metrics folder. The UI's RHYTHM menu forces one set for the whole run.
+The old behaviour (skip tagged recordings) is still available with
+`'ExcludePattern'`, which now defaults to `''`.
+
+### Polarity of arrhythmia and unpaced recordings
+
+Without a usable stimulus, conditioning can only judge polarity from signal
+shape, which is unreliable for near-sinusoidal VT (it inverted the Fig 5
+voltage). Two safeguards, in order:
+
+1. **Session prior** (`'SessionPolarity'`, default on). Polarity is set by the
+   dye and the optics, not by the rhythm, so within one experiment folder
+   (the folder that holds the recording folders, e.g. `ZT2_8am/R2`) each
+   camera keeps the orientation its stimulus-based checks found. Every
+   camera's decision is logged in `<processed>/cadence_polarity_log.csv`. A
+   camera whose own check fell back to shape takes the session's orientation
+   when at least 2 paced recordings of that camera agree (>= 90%; source
+   `session`). Tagged arrhythmia recordings are processed last in their
+   folder so the prior exists; a recording oriented before its session had a
+   prior is corrected (conditioned file flipped and re-saved) and
+   re-extracted at the end of the run. Works for any rig, including
+   voltage-only multi-camera rigs.
+2. **Vm-Ca timing** (dual mapping, no session prior). Calcium must follow
+   voltage by a few ms; the median over pixels of each pixel's correlation
+   with calcium at -2 to +15 ms decides, and only when decisive (r >= 0.3,
+   leading by >= 0.2; source `vm-ca lag`). The pipeline passes the camera
+   roles (`VoltageCams` / `CalciumCams` in `ConditionOpts`).
+
+A camera with neither keeps the shape decision; its `*_polarity_source` and
+confidence are in the conditioned file and the polarity log for review.
 
 ## Analysis sheets
 
@@ -224,8 +279,9 @@ Change any of these through `ExtractOpts` (see the header of
 `cadence_extract_features.m`). One deliberate addition beyond the app's
 output: APD50 and CaTD50 maps are stored as `ep_metrics.apd50_data` and
 `ep_metrics.ca50_data` (same 6-slot layout, same engine as APD80; option
-`ExtraAPDLevels`, pass `[]` to omit). The app's own fields are unchanged. Arrhythmia-dynamics stages (wavefront and
-phase-singularity tracking) are not run; they are not part of the summary.
+`ExtraAPDLevels`, pass `[]` to omit). The app's own fields are unchanged.
+Arrhythmia recordings run the arrhythmia-dynamics stages instead (see
+*Paced and arrhythmia recordings*).
 
 Parity with the app was checked two ways: (1) `mv_reextract_check` between an
 app-produced metrics file and the headless output of the same recording gives

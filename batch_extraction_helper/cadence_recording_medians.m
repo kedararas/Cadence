@@ -242,6 +242,50 @@ function [vals, labels] = cadence_recording_medians(d, varargin)
          ~(isfinite(vals.v_polarity_conf) && vals.v_polarity_conf < 0);
     if isfinite(vals.apd_v), vals.v_ensemble_valid = double(ok); end
 
+    % ---- arrhythmia dynamics (wavefront_data / rotor_data, voltage camera) ----
+    fs = NaN;  if isfield(d, 'acqFreq'), fs = double(d.acqFreq); end
+    if isfield(d, 'rhythm') && isstruct(d.rhythm) && isfield(d.rhythm, 'beat_cv')
+        vals.beat_cv_v = scalar(d.rhythm.beat_cv);
+    end
+    wd = slot(em, 'wavefront_data', v, 1);
+    if iscell(wd) && numel(wd) >= 3 && isfinite(fs)
+        wfc = wd{2};  wfd = wd{3};
+        if ~isempty(wfc), vals.wf_per_frame_v = mean(wfc(end,:)); end
+        dur = size(wfc, 2) / fs;                              % s
+        if isobject(wfd) || isstruct(wfd)
+            n = @(x) size(x, 1);
+            sd = wfd.wf_size_duration;
+            vals.wf_rate_v              = n(sd) / dur;
+            if ~isempty(sd), vals.wf_life_ms_v = 1000 * median(sd(:,5)) / fs; end
+            vals.wf_frac_rate_v         = n(wfd.wf_fractionations) / dur;
+            vals.wf_collision_rate_v    = n(wfd.wf_collisions) / dur;
+            vals.wf_expiry_rate_v       = n(wfd.wf_blocks) / dur;
+            vals.wf_breakthrough_rate_v = n(wfd.wf_breakthroughs) / dur;
+            vals.wf_reentry_rate_v      = n(wfd.wf_reentry) / dur;
+        end
+    end
+    rd = slot(em, 'rotor_data', v, 1);
+    if iscell(rd) && numel(rd) >= 4 && isfinite(fs)
+        psc = rd{3};  psd = rd{4};
+        if ~isempty(psc), vals.ps_per_frame_v = mean(psc(min(2, size(psc,1)), :)); end
+        nfr = size(psc, 2);  dur = nfr / fs;
+        if (isobject(psd) || isstruct(psd)) && dur > 0
+            pi_ = psd.ps_info;
+            vals.ps_rate_v = size(pi_, 1) / dur;
+            if ~isempty(pi_), vals.ps_life_ms_v = 1000 * median(pi_(:,3)) / fs; end
+            vals.rotor_n_v = size(psd.path, 1);
+            if ~isempty(psd.path)
+                vals.rotor_life_max_ms_v = 1000 * max(cellfun(@(m) m(3), psd.path(:,1))) / fs;
+            else
+                vals.rotor_life_max_ms_v = 0;
+            end
+            vp = psd.valid_ps;
+            if ~isempty(vp)
+                vals.rotor_frac_time_v = mean(cellfun(@(x) ~isempty(x) && any(x(:) > 0), vp));
+            end
+        end
+    end
+
     if isstruct(sub)
         vals.apd_alt_ratio_v = nanmed(fld(sub, 'alt_ratio_map'));
         vals.alt_phase_v     = nanmed(fld(sub, 'phase_map'));

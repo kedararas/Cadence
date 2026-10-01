@@ -17,7 +17,9 @@ function T = cadence_recompute_medians(output_root, varargin)
 %   'SummaryFile', 'CameraFile', 'BuildSummary' (default true), 'SaveMapsPDF' (default
 %   false: write <name>-maps.pdf next to every metrics file, the cardiac maps
 %   of each feature and camera, see cadence_maps_pdf; existing PDFs are
-%   rewritten), 'ExcludePattern'.
+%   rewritten), 'ExcludePattern' (default '' = every metrics file; arrhythmia
+%   recordings carry their classification in metrics.rhythm), 'ArrhythmiaPattern'
+%   (file-name tag for the Name_tag column).
 
     p = inputParser;
     p.addParameter('Folders', {}, @(x) iscellstr(x) || isstring(x) || ischar(x));
@@ -26,7 +28,8 @@ function T = cadence_recompute_medians(output_root, varargin)
     p.addParameter('CameraFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('BuildSummary', true, @islogical);
     p.addParameter('SaveMapsPDF', false, @islogical);
-    p.addParameter('ExcludePattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
+    p.addParameter('ExcludePattern', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('ArrhythmiaPattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
     p.parse(varargin{:});
     o = p.Results;
     o.Folders = cellstr(o.Folders); o.Folders = o.Folders(~cellfun(@isempty, o.Folders));
@@ -64,6 +67,8 @@ function T = cadence_recompute_medians(output_root, varargin)
                    'Stim', m.stim, 'File', string([m.base '.mat']), 'Source', "", 'Metrics_file', string(f));
         for q = 1:size(L,1), r.(L{q,1}) = NaN; end
         r.Features = ""; r.Errors = ""; r.Elapsed_s = NaN; r.Extracted_on = ""; r.Maps_pdf = ""; r.Filter = "";
+        r.Rhythm = ""; r.Capture = ""; r.Rhythm_basis = "";
+        r.Name_tag = double(~isempty(char(o.ArrhythmiaPattern)) && ~isempty(regexp(files(k).name, char(o.ArrhythmiaPattern), 'once')));
         try
             S = load(f);
             if isfield(S, 'cmos_all_data'), d = S.cmos_all_data; else, fn = fieldnames(S); d = S.(fn{1}); end
@@ -76,6 +81,11 @@ function T = cadence_recompute_medians(output_root, varargin)
                 elseif ~isempty(fb.conditioned_hz)
                     r.Filter = string(sprintf('%g Hz', fb.conditioned_hz));
                 end
+            end
+            if isfield(d, 'rhythm') && isstruct(d.rhythm)
+                r.Rhythm = string(d.rhythm.class);  r.Capture = string(d.rhythm.capture);
+                r.Rhythm_basis = string(d.rhythm.basis);
+                if ~isempty(d.rhythm.note), r.Rhythm_basis = r.Rhythm_basis + " | NOTE: " + string(d.rhythm.note); end
             end
             v = cadence_recording_medians(d);
             fn = fieldnames(v);

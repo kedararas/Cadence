@@ -56,6 +56,28 @@ function [d, status] = cadence_condition_data(d, opts)
 %     Normalize    true      E) DATA NORMALIZATION
 %     Ensemble     true      F) ENSEMBLE AVERAGING
 %     MaskFloor    2         SNR floor of the final tissue mask (app: fixed 2)
+%     VoltageCams  []        camera roles, for the Vm-Ca polarity tie-breaker
+%     CalciumCams  []        (batch only; the app has no equivalent).  When a
+%                            voltage camera's polarity came from the SHAPE check
+%                            (no usable stimulus: arrhythmia or unpaced) and a
+%                            calcium camera is at least as decisive, the voltage
+%                            orientation is set so that calcium FOLLOWS voltage
+%                            by -2 to +min(15 ms, 0.3 cycle): the tissue-mean
+%                            traces are cross-correlated, and the orientation
+%                            that wins by >= 0.2 in correlation is kept.  An
+%                            inverted voltage puts the best lag half a cycle
+%                            away (Fig 5: -16 / +24 ms as stored, +5 ms flipped).
+%                            The source is then 'vm-ca lag'.
+%     PolarityPrior []       session polarity prior (batch only): struct array
+%                            with fields cam, inverted, n, agree -- the
+%                            STIMULUS-based decisions for that camera in the
+%                            other recordings of the same experiment (see
+%                            cadence_batch_pipeline).  Polarity is set by the dye
+%                            and optics, not the rhythm, so a camera whose own
+%                            check fell back to signal SHAPE (no usable stimulus)
+%                            takes the prior's orientation instead; the source is
+%                            then 'session'.  Applied before the Vm-Ca tie-breaker,
+%                            which then only sees cameras without a prior.
 %     Name         ''        recording name for QC records and messages
 %     Log          @(s) fprintf('%s\n', s)
 %
@@ -67,6 +89,7 @@ function [d, status] = cadence_condition_data(d, opts)
 %     .messages   cellstr, one line per stage (the app's console lines)
 %     .errors     cellstr of stage errors (empty = clean run)
 %     .polarity   struct array per camera: cam, inverted, confidence, method
+%                 (a Vm-Ca tie-breaker flip is recorded on that camera)
 %     .qc         validate_conditioned records (also attached to d.qc)
 %     .pacing     true when analog1 drove ensemble averaging
 %     .timing     struct of seconds per stage
@@ -235,11 +258,13 @@ function [d, status] = cadence_condition_data(d, opts)
     try
         pacing = [];
         if isfield(d, 'analog1'), pacing = d.analog1; end
+        pol_masks = cell(1, d.num_files);
         for i = 1:d.num_files
             cam_f = sprintf('CAM%d', i);
             avg_f = sprintf('CAM%d_average', i);
             snr_f = sprintf('CAM%d_SNR', i);
             snr_mask = create_snr_mask(d.(snr_f), 3, true);
+            pol_masks{i} = snr_mask;
 
             % Stimulus-anchored first: after a stimulus a correctly oriented
             % signal must deflect UP.  Immune to duty cycle.
@@ -259,6 +284,21 @@ function [d, status] = cadence_condition_data(d, opts)
                 source = 'stimulus';
                 why = sprintf('post-stimulus deflection, confidence %+.2f', conf);
             end
+            % Session prior: the same camera's stimulus-based orientation in
+            % this experiment outranks a shape-only decision.
+            pr = prior_for(P.PolarityPrior, i);
+            if strcmp(source, 'shape') && ~isempty(pr)
+                if logical(pr.inverted) ~= logical(inv)
+                    say(sprintf('Session prior OVERRULES the shape check for %s (shape said %s, %+.2f).', ...
+                        cam_f, tern_str(inv, 'inverted', 'upright'), conf));
+                end
+                inv  = logical(pr.inverted);
+                conf = (1 - 2*double(inv)) * pr.agree;
+                method = sprintf('session prior (%d stimulus recordings)', pr.n);
+                source = 'session';
+                why = sprintf('session prior: %d paced recording(s) of this experiment, %.0f%% %s', ...
+                    pr.n, 100*pr.agree, tern_str(inv, 'inverted', 'upright'));
+            end
             % Provenance, saved with the file. Signed as measured on the data
             % BEFORE any flip: negative = the recording arrived inverted.
             d.(sprintf('CAM%d_polarity_confidence', i)) = conf;
@@ -276,6 +316,8 @@ function [d, status] = cadence_condition_data(d, opts)
             status.polarity(end+1) = struct('cam', i, 'inverted', logical(inv), ...
                 'confidence', conf, 'method', method); %#ok<AGROW>
         end
+        % Vm-Ca timing tie-breaker for voltage cameras decided by shape alone.
+        [d, status] = vm_ca_polarity(d, P, pol_masks, status, @say);
         say('Checked for signal inversion... Done');
     catch ME
         fail('inversion', ME);
@@ -370,7 +412,8 @@ end
 function P = resolve_options(opts)
     P = struct('Drift', true, 'SVD', true, 'SVDRank', 8, 'Binning', false, 'BinSize', 3, ...
                'FilterHz', 50, 'LowBandHz', [], 'Motion', false, 'Normalize', true, 'Ensemble', true, ...
-               'MaskFloor', 2, 'Name', '', 'Log', @(s) fprintf('%s\n', s));
+               'MaskFloor', 2, 'VoltageCams', [], 'CalciumCams', [], 'PolarityPrior', [], ...
+               'Name', '', 'Log', @(s) fprintf('%s\n', s));
     fn = fieldnames(opts);
     for k = 1:numel(fn)
         if ~isfield(P, fn{k})
@@ -390,4 +433,128 @@ function P = resolve_options(opts)
             error('cadence_condition_data:option', 'LowBandHz (%g) must be below FilterHz (%g).', P.LowBandHz, P.FilterHz);
         end
     end
+end
+
+
+function [d, status] = vm_ca_polarity(d, P, masks, status, say)
+% See VoltageCams / CalciumCams in the header.  Runs after the per-camera
+% checks (so calcium is already oriented) and before ensemble averaging.
+    ca = P.CalciumCams(P.CalciumCams <= d.num_files);
+    vs = P.VoltageCams(P.VoltageCams <= d.num_files);
+    if isempty(ca) || isempty(vs), return; end
+    ca = ca(1);
+    ca_conf = abs(get_num(d, sprintf('CAM%d_polarity_confidence', ca)));
+    ca_src  = get_str(d, sprintf('CAM%d_polarity_source', ca));
+    for v = vs(:)'
+        if ~strcmp(get_str(d, sprintf('CAM%d_polarity_source', v)), 'shape'), continue; end
+        v_conf = abs(get_num(d, sprintf('CAM%d_polarity_confidence', v)));
+        if ~strcmp(ca_src, 'stimulus') && ca_conf < v_conf
+            say(sprintf('Vm-Ca polarity check skipped for CAM%d: calcium (CAM%d, %s %.2f) is less decisive than voltage (%.2f).', ...
+                v, ca, ca_src, ca_conf, v_conf));
+            continue;
+        end
+        [keep_up, flip, info] = lag_test(d.(sprintf('CAM%d', v)), masks{v}, ...
+                                         d.(sprintf('CAM%d', ca)), masks{ca}, d.acqFreq);
+        % saved confidence keeps the convention: negative = arrived inverted
+        was_inv = get_num(d, sprintf('CAM%d_polarity_confidence', v)) < 0;
+        margin  = abs(info.score_keep - info.score_flip);
+        if flip
+            d.(sprintf('CAM%d', v)) = 1 - d.(sprintf('CAM%d', v));
+            avg_f = sprintf('CAM%d_average', v);
+            if isfield(d, avg_f) && ~isempty(d.(avg_f)), d.(avg_f) = 1 - d.(avg_f); end
+            d.(sprintf('CAM%d_polarity_source', v)) = 'vm-ca lag';
+            d.(sprintf('CAM%d_polarity_confidence', v)) = (1 - 2*double(~was_inv)) * margin;
+            k = find([status.polarity.cam] == v, 1, 'last');
+            if ~isempty(k)
+                status.polarity(k).inverted = ~status.polarity(k).inverted;
+                status.polarity(k).method = 'Vm-Ca lag';
+            end
+            say(sprintf(['Vm-Ca lag check FLIPPED CAM%d: calcium follows the inverted voltage at %+.1f ms ' ...
+                '(r %.2f) vs %+.1f ms as it was (r %.2f).'], v, info.lag_flip_ms, info.score_flip, info.lag_keep_ms, info.score_keep));
+        elseif keep_up
+            d.(sprintf('CAM%d_polarity_source', v)) = 'vm-ca lag';
+            d.(sprintf('CAM%d_polarity_confidence', v)) = (1 - 2*double(was_inv)) * margin;
+            say(sprintf('Vm-Ca lag check confirms CAM%d: calcium follows at %+.1f ms (r %.2f; flipped %.2f).', ...
+                v, info.lag_keep_ms, info.score_keep, info.score_flip));
+        else
+            say(sprintf('Vm-Ca lag check inconclusive for CAM%d (%s: r %.2f as is, %.2f flipped); shape decision kept.', ...
+                v, info.mode, info.score_keep, info.score_flip));
+        end
+    end
+end
+
+function [keep_up, flip, info] = lag_test(V, mv, C, mc, fs)
+% Correlate voltage with calcium shifted by lags in [-2 ms, +min(15 ms, 0.3
+% cycle)], for the voltage as is and inverted.  Calcium trails voltage by a
+% few ms; an inverted voltage puts the best lag half a cycle away.
+%   per-pixel (cameras on one pixel grid): median over pixels in both masks of
+%     each pixel's correlation -- robust to a rotating wave, whose tissue mean
+%     cancels.  Decisive when the winner is >= 0.3 and leads by >= 0.2.
+%   tissue mean (grids differ): weaker; decisive only at >= 0.5 and a 0.2 lead.
+    keep_up = false;  flip = false;
+    info = struct('mode', '', 'score_keep', NaN, 'score_flip', NaN, 'lag_keep_ms', NaN, 'lag_flip_ms', NaN);
+    keepv = mv(:) > 0 & isfinite(mv(:));
+    keepc = mc(:) > 0 & isfinite(mc(:));
+    T = size(V, 3);
+    if isequal(size(V), size(C))
+        both = find(keepv & keepc);
+        if numel(both) > 3000, both = both(round(linspace(1, numel(both), 3000))); end
+        X = reshape(V, [], T);  Y = reshape(C, [], T);
+        X = X(both, :);  Y = Y(both, :);
+        ok = all(isfinite(X), 2) & all(isfinite(Y), 2);
+        X = X(ok, :);  Y = Y(ok, :);
+        info.mode = 'per-pixel';  min_r = 0.3;
+    else
+        X = masked_mean(V, mv)';  Y = masked_mean(C, mc)';
+        ok = isfinite(X) & isfinite(Y);  X = X(ok);  Y = Y(ok);
+        info.mode = 'tissue mean';  min_r = 0.5;
+    end
+    if size(X, 1) < 1 || size(X, 2) < 50, return; end
+    X = detrend(X')';  Y = detrend(Y')';
+    df = cardiacSpectralMetrics(median(X, 1)', fs);
+    hi = 0.015;
+    if isfinite(df) && df > 0, hi = min(hi, 0.3 / df); end
+    lags = round(-0.002 * fs):max(1, round(hi * fs));
+    r = nan(size(lags));
+    for k = 1:numel(lags)
+        L = lags(k);
+        if L >= 0, a = X(:, 1:end-L); b = Y(:, 1+L:end);
+        else,      a = X(:, 1-L:end); b = Y(:, 1:end+L); end
+        a = a - mean(a, 2);  b = b - mean(b, 2);
+        rp = sum(a .* b, 2) ./ sqrt(sum(a.^2, 2) .* sum(b.^2, 2));
+        r(k) = median(rp, 'omitnan');
+    end
+    [info.score_keep, ik] = max(r);
+    [info.score_flip, iff] = max(-r);
+    info.lag_keep_ms = 1000 * lags(ik) / fs;
+    info.lag_flip_ms = 1000 * lags(iff) / fs;
+    margin = 0.2;
+    flip    = info.score_flip >= min_r && info.score_flip - info.score_keep >= margin;
+    keep_up = info.score_keep >= min_r && info.score_keep - info.score_flip >= margin;
+end
+
+function tr = masked_mean(X, mask)
+    keep = mask(:) > 0 & isfinite(mask(:));
+    F = reshape(X, size(X,1) * size(X,2), []);
+    tr = mean(F(keep, :), 1, 'omitnan')';
+end
+
+function v = get_num(d, f)
+    if isfield(d, f) && ~isempty(d.(f)), v = double(d.(f)); else, v = NaN; end
+end
+
+function s = get_str(d, f)
+    if isfield(d, f) && ~isempty(d.(f)), s = char(d.(f)); else, s = ''; end
+end
+
+
+function pr = prior_for(prior, cam)
+    pr = [];
+    if isempty(prior) || ~isstruct(prior) || ~isfield(prior, 'cam'), return; end
+    k = find([prior.cam] == cam, 1);
+    if ~isempty(k), pr = prior(k); end
+end
+
+function s = tern_str(c, a, b)
+    if c, s = a; else, s = b; end
 end

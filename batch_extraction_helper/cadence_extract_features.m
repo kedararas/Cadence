@@ -62,6 +62,19 @@ function [d, status] = cadence_extract_features(d, opts)
 %                     cams) in the standard 6-slot layout (default 50, i.e.
 %                     APD50 and CaTD50).  These fields are an ADDITION to what
 %                     the app writes; pass [] to omit them.
+%     Rhythm          'auto' (default) | 'paced' | 'arrhythmia'.  Which metric set
+%                     a recording gets (see RHYTHM below).  'paced'/'arrhythmia'
+%                     skip the classification (an override).
+%     NameTag         true when the file name says arrhythmia (default false).
+%                     A hint only: it decides a REGULAR unpaced recording, which
+%                     the data cannot tell apart from sinus rhythm.
+%     CaptureTol      1:1 capture tolerance, fraction of the pacing rate
+%                     (default 0.05; window = max(tol * rate, 0.55 FFT bin)).
+%     BeatCVMax       unpaced beat-interval CV above which a recording is
+%                     irregular, i.e. arrhythmia (default 0.15).
+%     OIMin           unpaced organization index below which a recording is
+%                     arrhythmia (default 0.35; paced 1:1 recordings in the
+%                     validation set had OI >= 0.39).
 %     LowBand         'auto' (default) | true | false.  HYBRID FILTER (batch only).
 %                     The conditioned file must carry CAM<n>_average_lowband
 %                     (cadence_condition_data 'LowBandHz'). Then:
@@ -81,6 +94,26 @@ function [d, status] = cadence_extract_features(d, opts)
 %                     has a low-band average; true requires it; false ignores it.
 %                     What was done is saved as metrics.filter_bands.
 %     Log             function handle for messages (default @(s) fprintf('%s\n',s))
+%
+%   RHYTHM  (classified per recording before any metric is extracted)
+%     Voltage dominant frequency (DF) is computed first, on the first
+%     complexity camera (voltage; calcium if the rig has no voltage camera).
+%       stimulus present and regular -> DF vs pacing rate: within tolerance =
+%         1:1 capture -> PACED; otherwise (2:1 block, lost capture, an
+%         arrhythmia outlasting the drive) -> ARRHYTHMIA.
+%       no usable stimulus -> beat-interval CV of the tissue-mean trace and the
+%         median OI: irregular (CV > BeatCVMax or OI < OIMin) -> ARRHYTHMIA;
+%         regular -> ARRHYTHMIA if NameTag, else PACED (sinus / spontaneous).
+%     PACED: every stage above (voltage: activation, APD80 + ExtraAPDLevels,
+%       repolarization, rise, local CV, DF/RI/OI, alternans; calcium: V-Ca delay,
+%       CaTD, decay, rise, tau, alternans).
+%     ARRHYTHMIA: voltage cameras only -- DF/RI/OI (complexity_data), then the
+%       phase movie, wavefront dynamics (wavefront_data) and phase-singularity
+%       / rotor dynamics (rotor_data), as the app's extract_arr_wave_dynamics
+%       and extract_arr_ps_dynamics compute them. Calcium is not extracted.
+%       With the hybrid filter, DF/RI/OI use the conditioned band and the
+%       phase, wavefronts and rotors the low band (the band of Fig 5).
+%     The decision and the numbers behind it are saved as metrics.rhythm.
 %
 %   status
 %     .features   cellstr of ep_metrics fields produced
@@ -143,8 +176,43 @@ function [d, status] = cadence_extract_features(d, opts)
     end
     status.timing.masks = toc(t0);
 
+    % ---- rhythm: paced (1:1 capture) or arrhythmia ---------------------------
+    % DF/RI/OI first, at the conditioned band: the classification needs DF, and
+    % both metric sets report it (the result is reused, not recomputed).
+    t0 = tic;
+    cx_em = struct('complexity_data', {cell(0,5)});  cx_info = struct();
+    try
+        [cx_em, cx_info] = stage_complexity(d, P);
+    catch ME
+        status.errors{end+1} = sprintf('complexity_data FAILED: %s', ME.message);
+        logf(status.errors{end});
+    end
+    status.timing.complexity_data = toc(t0);
+    R = classify_rhythm(d, P, cx_info);
+    d.rhythm = R;
+    logf(sprintf('Rhythm: %s  [%s]', upper(R.class), R.basis));
+    if ~isempty(R.note), logf(['NOTE: ' R.note]); end
+    arrhythmia = strcmp(R.class, 'arrhythmia');
+    if arrhythmia
+        % voltage only: no calcium stages, DF/RI/OI and dynamics on voltage cameras
+        P.ArrCams = P.VoltageCams;
+        P.CalciumCams = [];
+        P.ComplexityCams = P.ArrCams;
+        if isempty(P.ArrCams)
+            logf('Arrhythmia recording but no voltage camera: no arrhythmia metrics extracted.');
+        end
+        keep = false(size(cx_em.complexity_data, 1), 1);  keep(P.ArrCams(P.ArrCams <= numel(keep))) = true;
+        cx_em.complexity_data(~keep, :) = {[]};
+    end
+
     % ---- stages, in the app's order ---------------------------------------
     % Each stage takes the CURRENT data (the hybrid filter swaps stacks mid-run).
+    if arrhythmia
+        stages = { ...
+            'complexity_data', ~isempty(P.ArrCams), @(dd) cx_em; ...
+            'wavefront_data',  ~isempty(P.ArrCams), @(dd) stage_wave_dynamics(dd, P); ...
+            'rotor_data',      ~isempty(P.ArrCams), @(dd) stage_ps_dynamics(dd, P)};
+    else
     stages = { ...
         'act_times',     P.DoActTime,    @(dd) stage_act_time(dd, P); ...
         'apd_data',      P.DoAPD,        @(dd) stage_v_apd(dd, P); ...
@@ -157,16 +225,21 @@ function [d, status] = cadence_extract_features(d, opts)
         'ca_rise_times', P.DoCaRise,     @(dd) stage_c_rise(dd, P); ...
         'ca_tau',        P.DoTau,        @(dd) stage_tau(dd, P); ...
         'extra_apd',     ~isempty(P.ExtraAPDLevels), @(dd) stage_extra_apd(dd, P); ...
-        'complexity_data', P.DoComplexity, @(dd) stage_complexity(dd, P); ...
+        'complexity_data', P.DoComplexity, @(dd) cx_em; ...
         'alternans_data',  P.DoAlternans,  @(dd) stage_alternans(dd, P)};
+    end
 
     % ---- hybrid filter: which band each stage uses ---------------------------
     high_band = {'ap_rise_times', 'ca_rise_times', 'complexity_data'};
-    [hybrid, lowHz, condHz] = resolve_hybrid(d, P);
+    [hybrid, lowHz, condHz] = resolve_hybrid(d, P, arrhythmia);
     if hybrid
         is_high = ismember(stages(:,1), high_band);
         order = [find(is_high); find(~is_high)];       % high band first, then swap
-        logf(sprintf('Hybrid filter: rise times and DF/RI/OI at [0, %g Hz]; all other metrics at [0, %g Hz].', condHz, lowHz));
+        if arrhythmia
+            logf(sprintf('Hybrid filter: DF/RI/OI at [0, %g Hz]; phase, wavefronts and rotors at [0, %g Hz].', condHz, lowHz));
+        else
+            logf(sprintf('Hybrid filter: rise times and DF/RI/OI at [0, %g Hz]; all other metrics at [0, %g Hz].', condHz, lowHz));
+        end
     else
         order = (1:size(stages, 1))';
     end
@@ -182,6 +255,7 @@ function [d, status] = cadence_extract_features(d, opts)
         end
         if ~stages{s,2}, continue; end
         t0 = tic;
+        if strcmp(name, 'complexity_data') && isempty(cx_em.complexity_data), continue; end   % failed above
         try
             em = stages{s,3}(d);               % struct of ep_metrics fields to merge
             fn = fieldnames(em);
@@ -198,7 +272,7 @@ function [d, status] = cadence_extract_features(d, opts)
             logf(msg);
             status.errors{end+1} = msg; %#ok<AGROW>
         end
-        status.timing.(name) = toc(t0);
+        if ~strcmp(name, 'complexity_data'), status.timing.(name) = toc(t0); end
     end
     if hybrid && ~swapped, d = to_low_band(d, P, lowHz); end   % keep the saved stacks consistent
 
@@ -223,8 +297,11 @@ end
 % =========================================================================
 %                              OPTIONS
 % =========================================================================
-function [hybrid, lowHz, condHz] = resolve_hybrid(d, P)
+function [hybrid, lowHz, condHz] = resolve_hybrid(d, P, stack_only)
 % Decide whether to run the hybrid filter and with which cutoffs.
+% stack_only (arrhythmia path): only the stacks are low-passed, so the
+% low-band ensemble averages are not needed -- the recorded cutoff is enough.
+    if nargin < 3, stack_only = false; end
     condHz = []; lowHz = [];
     if isfield(d, 'temporal_filter') && isstruct(d.temporal_filter)
         condHz = d.temporal_filter.conditioned_hz;
@@ -233,6 +310,7 @@ function [hybrid, lowHz, condHz] = resolve_hybrid(d, P)
     cams = unique([P.VoltageCams(:); P.CalciumCams(:); P.ComplexityCams(:)])';
     have = ~isempty(cams) && all(arrayfun(@(i) isfield(d, sprintf('CAM%d_average_lowband', i)) && ...
                                         ~isempty(d.(sprintf('CAM%d_average_lowband', i))), cams));
+    if stack_only, have = ~isempty(cams) && ~isempty(lowHz) && lowHz > 0; end
     want = P.LowBand;
     if ischar(want) || isstring(want)
         if ~strcmpi(want, 'auto'), error('cadence_extract_features:option', 'LowBand must be ''auto'', true or false.'); end
@@ -256,9 +334,11 @@ function d = to_low_band(d, P, lowHz)
     cams = unique([P.VoltageCams(:); P.CalciumCams(:); P.ComplexityCams(:)])';
     for i = cams
         f = sprintf('CAM%d', i);
-        d.([f '_average_highband']) = d.([f '_average']);
-        d.([f '_average'])          = d.([f '_average_lowband']);
-        d = rmfield(d, [f '_average_lowband']);
+        if isfield(d, [f '_average_lowband'])        % absent on the arrhythmia path
+            d.([f '_average_highband']) = get_field(d, [f '_average']);
+            d.([f '_average'])          = d.([f '_average_lowband']);
+            d = rmfield(d, [f '_average_lowband']);
+        end
         d.(f) = filter_masked(d.(f), P.acqFreq, lowHz);
     end
 end
@@ -291,6 +371,7 @@ function P = resolve_options(d, opts)
         'ComplexityCams', [], ...
         'ExtraAPDLevels', 50, ...
         'LowBand', 'auto', ...
+        'Rhythm', 'auto', 'NameTag', false, 'CaptureTol', 0.05, 'BeatCVMax', 0.15, 'OIMin', 0.35, ...
         'Log', @(s) fprintf('%s\n', s));
     P = def;
     fn = fieldnames(opts);
@@ -324,6 +405,11 @@ function P = resolve_options(d, opts)
 
     if isempty(P.ComplexityCams), P.ComplexityCams = P.VoltageCams; end
     P.ComplexityCams = P.ComplexityCams(arrayfun(present, P.ComplexityCams));
+    P.Rhythm = lower(char(P.Rhythm));
+    if ~ismember(P.Rhythm, {'auto', 'paced', 'arrhythmia'})
+        error('cadence_extract_features:option', 'Rhythm must be ''auto'', ''paced'' or ''arrhythmia''.');
+    end
+    P.ArrCams = [];
 end
 
 
@@ -872,8 +958,10 @@ end
 % =========================================================================
 %                  DF / RI / OI  (extract_arr_complexity)
 % =========================================================================
-function em = stage_complexity(d, P)
+function [em, info] = stage_complexity(d, P)
+% info(i): FFT bin width (Hz) per camera, for the rhythm classification.
     em = struct(); em.complexity_data = cell(0,5);
+    info = struct('bin_hz', {}, 'maps', {});
     for i = P.ComplexityCams
         if ~isempty(P.combo_masks{i,1})
             mask = P.combo_masks{i,1};
@@ -885,8 +973,10 @@ function em = stage_complexity(d, P)
         n_pixels = size(cmos_data, 1) * size(cmos_data, 2);
         bg_3d  = bg_idx + (0:size(cmos_data,3)-1) * n_pixels;
         cmos_data(bg_3d) = NaN;
-        [DF, RI, OI, ~] = cardiacSpectralMetrics(cmos_data, P.acqFreq);
+        [DF, RI, OI, sp] = cardiacSpectralMetrics(cmos_data, P.acqFreq);
         if isempty(DF), continue; end
+        info(i).bin_hz = sp.f(2) - sp.f(1);
+        info(i).maps   = {DF, RI, OI};
         em.complexity_data{i,1} = {DF, RI, OI};
         em.complexity_data{i,2} = get_bg_image(d, i);
         em.complexity_data{i,3} = squeeze(normalize_data(cmos_data(P.row, P.col, :)));
@@ -967,4 +1057,229 @@ function data = extract_c_alternans(d, P, pacing, camera)
     data{1,4} = num2str(camera);
     data{1,5} = [];
     data{1,6} = 'Ca';
+end
+
+
+% =========================================================================
+%                RHYTHM  (paced 1:1 capture vs arrhythmia)
+% =========================================================================
+function R = classify_rhythm(d, P, cx_info)
+% Decide which metric set a recording gets.  See RHYTHM in the header.
+    R = struct('class', 'paced', 'basis', '', 'capture', '', 'cam', NaN, ...
+               'pacing_hz', NaN, 'df_hz', NaN, 'ri', NaN, 'oi', NaN, 'beat_cv', NaN, ...
+               'name_tag', logical(P.NameTag), 'note', '');
+
+    % camera: first complexity (voltage) camera, else the first calcium camera
+    cam = [P.ComplexityCams(:); P.VoltageCams(:); P.CalciumCams(:)];
+    if isempty(cam)
+        R.basis = 'no camera to classify; treated as paced';
+        return;
+    end
+    cam = cam(1);  R.cam = cam;
+    mask = P.combo_masks{cam,1};
+    if isempty(mask), mask = extract_image_mask(get_bg_image(d, cam), 50); end
+
+    % spectral medians over the mask (reuse the complexity maps when computed)
+    try
+        X = d.(sprintf('CAM%d', cam));
+        bg = isnan(mask);
+        n_px = size(X,1) * size(X,2);
+        X(find(bg) + (0:size(X,3)-1) * n_px) = NaN;
+        if numel(cx_info) >= cam && ~isempty(cx_info(cam).bin_hz)
+            % same mask and stack as stage_complexity: reuse its maps
+            bin_hz = cx_info(cam).bin_hz;
+            DF = cx_info(cam).maps{1};  RI = cx_info(cam).maps{2};  OI = cx_info(cam).maps{3};
+        else
+            [DF, RI, OI, sp] = cardiacSpectralMetrics(X, P.acqFreq);
+            bin_hz = sp.f(2) - sp.f(1);
+        end
+        v = isfinite(DF);
+        R.df_hz = median(DF(v));  R.ri = median(RI(v), 'omitnan');  R.oi = median(OI(v), 'omitnan');
+    catch ME
+        R.basis = ['spectral metrics failed (' ME.message '); treated as paced'];
+        return;
+    end
+
+    if ~strcmp(P.Rhythm, 'auto')
+        R.class = P.Rhythm;  R.basis = 'set by the caller (override)';
+        R = tag_note(R);
+        return;
+    end
+
+    pacing = [];
+    if isfield(d, 'analog1'), pacing = d.analog1; end
+    fp = pacing_frequency(pacing, P.acqFreq);
+    if isfinite(fp)
+        R.pacing_hz = fp;
+        R.capture = classify_ratio(R.df_hz, fp, bin_hz, P.CaptureTol);
+        if strcmp(R.capture, '1:1')
+            R.class = 'paced';
+        else
+            R.class = 'arrhythmia';
+        end
+        R.basis = sprintf('stimulus %.2f Hz, DF %.2f Hz: %s capture', fp, R.df_hz, R.capture);
+    else
+        R.capture = 'unpaced';
+        R.beat_cv = beat_interval_cv(X, mask, P.acqFreq, R.df_hz);
+        irregular = (isfinite(R.beat_cv) && R.beat_cv > P.BeatCVMax) || (isfinite(R.oi) && R.oi < P.OIMin);
+        nums = sprintf('beat CV %.2f, OI %.2f, DF %.2f Hz', R.beat_cv, R.oi, R.df_hz);
+        if irregular
+            R.class = 'arrhythmia';  R.basis = ['no stimulus, irregular (' nums ')'];
+        elseif P.NameTag
+            R.class = 'arrhythmia';  R.basis = ['no stimulus, regular (' nums '); file name says arrhythmia'];
+        else
+            R.class = 'paced';       R.basis = ['no stimulus, regular (' nums '): sinus / spontaneous'];
+        end
+    end
+    R = tag_note(R);
+end
+
+function R = tag_note(R)
+% Flag a file name that disagrees with the data.
+    if R.name_tag && strcmp(R.class, 'paced')
+        R.note = 'file name says arrhythmia, but the data show a paced/regular rhythm; extracted as paced';
+    elseif ~R.name_tag && strcmp(R.class, 'arrhythmia') && ~contains(R.basis, 'override')
+        R.note = 'not tagged as arrhythmia in the file name, but classified as arrhythmia from the data';
+    end
+end
+
+function fp = pacing_frequency(analog1, fs)
+% Stimulus rate from rising edges on the pacing channel (as mv_paced_df).
+% NaN when there is no regular stimulus train (fewer than 3 stimuli, or an
+% inter-stimulus interval that wanders by more than 5%).
+    fp = NaN;
+    if isempty(analog1), return; end
+    a  = double(analog1(:));
+    mx = max(a); mn = min(a);
+    if numel(a) < 10 || mx <= mn, return; end
+    stim = find(diff(a > (mx + mn) / 2) > 0);
+    if numel(stim) < 3, return; end
+    isi = diff(stim);
+    if median(isi) <= 0 || (std(isi) / median(isi)) > 0.05, return; end
+    fp = fs / median(isi);
+end
+
+function c = classify_ratio(df, fp, bin_hz, tol)
+% Capture class from DF vs pacing rate (as mv_paced_df).  Window =
+% max(tol * rate, 0.55 FFT bin): the bin term covers quantisation.
+    if ~isfinite(df) || ~isfinite(fp), c = 'n/a'; return; end
+    if ~isfinite(bin_hz), bin_hz = 0; end
+    w = max(tol * fp, 0.55 * bin_hz);
+    if     abs(df - fp)     <= w,      c = '1:1';
+    elseif abs(df - fp / 2) <= w,      c = '2:1 block';
+    elseif abs(df - 2 * fp) <= 2 * w,  c = '2x harmonic';
+    else,                              c = 'other';
+    end
+end
+
+function cv = beat_interval_cv(X, mask, fs, df)
+% Coefficient of variation of the beat-to-beat interval of the tissue-mean
+% trace.  Peaks at least 0.6 of a DF cycle apart, prominence >= 25% of the
+% 5-95 percentile range.  NaN when fewer than 4 beats are found.
+    cv = NaN;
+    if ~isfinite(df) || df <= 0, return; end
+    tr = tissue_mean(X, ~isnan(mask));
+    tr = tr(isfinite(tr));
+    if numel(tr) < 10, return; end
+    rng = prctile(tr, 95) - prctile(tr, 5);
+    if rng <= 0, return; end
+    [~, locs] = findpeaks(tr, 'MinPeakDistance', max(1, round(0.6 * fs / df)), 'MinPeakProminence', 0.25 * rng);
+    ibi = diff(locs);
+    if numel(ibi) < 3, return; end
+    cv = std(ibi) / median(ibi);
+end
+
+function tr = tissue_mean(X, keep)
+% Mean over the pixels in logical mask keep, per frame.
+    n = size(X,1) * size(X,2);
+    F = reshape(X, n, []);
+    tr = mean(F(keep(:), :), 1, 'omitnan')';
+end
+
+
+% =========================================================================
+%        ARRHYTHMIA DYNAMICS  (extract_arr_wave_dynamics / _ps_dynamics)
+% =========================================================================
+% ep_metrics layout, as Signal Analysis reads it (movie{1,2}{1,1} = wavefronts,
+% movie{1,3}{1,2} = PS, movie{1,3}{1,4} = PS dynamics):
+%   phase_data{cam,1}     rows x cols x frames Hilbert phase, {cam,2} background
+%   wavefront_data{cam,1} {wavefronts, wf_count, wf_dynamics, background}
+%   rotor_data{cam,1}     {ps_data, ps, ps_count, ps_dynamics, background}
+% (The app stores a num_files x 4/5 cell whose row cam holds these; one row per
+% camera is the same thing for CAM1 and is what the viewer indexes for any camera.)
+
+function mask = arr_mask(d, P, cam)
+% The app: user mask, else the adaptive SNR mask, else an image mask.
+    mask = P.combo_masks{cam,1};
+    if isempty(mask), mask = extract_image_mask(get_bg_image(d, cam), 100); end
+end
+
+function phase = phase_movie(X, mask)
+% extract_phase_data, line for line: mask, remove each pixel's mean, -angle(hilbert).
+    [nr, nc, T] = size(X);
+    X = X .* mask;
+    flat = reshape(X, nr*nc, T);
+    flat = flat - mean(flat, 2);
+    phase = reshape(-angle(hilbert(flat'))', nr, nc, T);
+end
+
+function df_map = cam_df_map(d, cam)
+    df_map = [];
+    cx = get_field(get_field(d, 'ep_metrics'), 'complexity_data');
+    if iscell(cx) && size(cx,1) >= cam && iscell(cx{cam,1}) && ~isempty(cx{cam,1})
+        df_map = cx{cam,1}{1};
+    end
+end
+
+function em = stage_wave_dynamics(d, P)
+    em = struct(); em.phase_data = cell(0,2); em.wavefront_data = cell(0,1);
+    for i = P.ArrCams
+        mask  = arr_mask(d, P, i);
+        phase = phase_movie(d.(sprintf('CAM%d', i)), mask);
+        nr = size(phase, 1);
+        px = P.FOV_mm / nr;                       % mm/px
+        min_wf_mm = 3;                            % reject wavefronts shorter than 3 mm
+        thr = round(min_wf_mm / px);
+        [wavefronts, wf_count] = count_wavefronts(phase, thr, px, min_wf_mm);
+        c = struct('pixel_size', px, 'wf_count', wf_count, 'wavefronts', {wavefronts}, ...
+                   'df_map', cam_df_map(d, i), 'frame_rate', P.acqFreq);
+        df_rotor = estimate_rotor_frequency(c.df_map, 75);
+        life = round(1.0 * P.acqFreq / df_rotor);  % one rotation, frames
+        wfd = extract_wavefront_dynamics(c, [0.3, 0.5, 20, 10, 30, 25, thr, life], 0);
+        bg = get_bg_image(d, i);
+        em.phase_data(i, 1:2) = {phase, bg};
+        em.wavefront_data{i,1} = {wavefronts, wf_count, wfd, bg};
+        P.Log(sprintf('CAM%d: %d frames, %.1f wavefronts/frame, %d tracked.', i, size(phase,3), ...
+            mean(wf_count(end,:)), size(wfd.wf_size_duration, 1)));
+    end
+end
+
+function em = stage_ps_dynamics(d, P)
+    em = struct(); em.rotor_data = cell(0,1);
+    epm = get_field(d, 'ep_metrics');
+    pd  = get_field(epm, 'phase_data');
+    wd  = get_field(epm, 'wavefront_data');
+    for i = P.ArrCams
+        if iscell(pd) && size(pd,1) >= i && ~isempty(pd{i,1})
+            phase = pd{i,1};
+        else
+            phase = phase_movie(d.(sprintf('CAM%d', i)), arr_mask(d, P, i));
+        end
+        px = P.FOV_mm / size(phase, 1);
+        c = struct();
+        c.ps_data    = extract_phase_singularity(phase);
+        c.frame_rate = P.acqFreq;
+        c.pixel_size = px;
+        if iscell(wd) && size(wd,1) >= i && ~isempty(wd{i,1})
+            c.wavefronts = wd{i,1}{1};
+        else
+            min_wf_mm = 3;
+            [c.wavefronts, ~] = count_wavefronts(phase, round(min_wf_mm / px), px, min_wf_mm);
+        end
+        c.df_map = cam_df_map(d, i);
+        c = extract_ps_dynamics(c);
+        em.rotor_data{i,1} = {c.ps_data, c.ps, c.ps_count, c.ps_dynamics, get_bg_image(d, i)};
+        P.Log(sprintf('CAM%d: %d PS tracks, %d stable rotor(s) (>= 1.5 rotations).', i, ...
+            size(c.ps_dynamics.ps_info, 1), size(c.ps_dynamics.path, 1)));
+    end
 end

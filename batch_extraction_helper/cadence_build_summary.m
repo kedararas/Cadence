@@ -44,9 +44,22 @@ function cadence_build_summary(T, out_xlsx, varargin)
         T = readtable(char(T), 'TextType', 'string', 'Delimiter', ',');
     end
     out_xlsx = char(out_xlsx);
-    L = cadence_metric_labels();
+    [L, arr_names] = cadence_metric_labels();
     have = ismember(L(:,1), T.Properties.VariableNames);
     L = L(have, :);
+    % Arrhythmia recordings (Rhythm column, written by the batch) get their own
+    % sheet; every other sheet summarizes the paced recordings and leaves the
+    % arrhythmia-only metrics out.  The onset analysis still sees all rows.
+    Tall = T;
+    if ismember('Rhythm', T.Properties.VariableNames)
+        is_arr = lower(string(T.Rhythm)) == "arrhythmia";
+        is_arr(ismissing(is_arr)) = false;
+        T = T(~is_arr, :);
+    else
+        is_arr = false(height(T), 1);
+    end
+    Larr = L(ismember(L(:,1), [arr_names; {'df_v'; 'ri_v'; 'oi_v'; 'pacing_hz'; 'capture_ratio'; 'tissue_frac_v'; 'v_polarity_conf'}]), :);
+    L = L(~ismember(L(:,1), arr_names), :);
     mnames = L(:,1);  mlabels = L(:,2);
 
     % ---- normalise meta columns --------------------------------------------
@@ -128,7 +141,7 @@ function cadence_build_summary(T, out_xlsx, varargin)
         oo = struct2nv(opt.OnsetOpts);
         exf = fullfile(outdir, 'cadence_excluded_recordings.csv');
         if isfile(exf) && ~isfield(opt.OnsetOpts, 'Excluded'), oo = [oo, {'Excluded', exf}]; end
-        [O, S] = cadence_alternans_onset(T, oo{:});
+        [O, S] = cadence_alternans_onset(Tall, oo{:});
         writetable(O, out_xlsx, 'Sheet', 'Alternans onset');
         writetable(S, out_xlsx, 'Sheet', 'Alternans per recording');
         writetable(O, fullfile(outdir, [stem '_alternans_onset.csv']));
@@ -175,6 +188,17 @@ function cadence_build_summary(T, out_xlsx, varargin)
         writecell([hdr; body], out_xlsx, 'Sheet', sname);
     end
 
+    % ---- Arrhythmia: one row per arrhythmia recording, its own metric set -------------
+    if any(is_arr)
+        A = Tall(is_arr, :);
+        meta = intersect({'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File', ...
+                          'Rhythm','Capture','Rhythm_basis','Name_tag'}, A.Properties.VariableNames, 'stable');
+        A = A(:, [meta, Larr(:,1)']);
+        hdr = [meta, Larr(:,2)'];
+        writecell([hdr; table2cell(A)], out_xlsx, 'Sheet', 'Arrhythmia');
+        writetable(A, fullfile(outdir, [stem '_arrhythmia.csv']));
+    end
+
     % ---- README ---------------------------------------------------------------------
     R = {'CADENCE median summary', ''; ...
          'Generated', datestr(now, 'yyyy-mm-dd HH:MM:SS'); ...
@@ -186,12 +210,13 @@ function cadence_build_summary(T, out_xlsx, varargin)
          'Per camera', per_camera_note(n_percam); ...
          'Conduction velocity', 'interior pixels only (8 px erosion of the tissue mask), cm/s'; ...
          'Alternans present', 'fraction of tissue pixels with alternans ratio > 0.10 and p < 0.05 is >= 0.10 (SigFrac); discordant when concordance ratio < 0.80'; ...
-         'Arrhythmia', 'file tag containing "arrhythm", or capture ratio outside 1 +/- 0.15 with OI (V) < 0.5'; ...
+         'Rhythm', 'each recording is classified before extraction (Rhythm column; Rhythm_basis says why): paced with DF within 5% of the stimulus rate = 1:1 capture -> paced metrics; any other capture, or no stimulus with an irregular rhythm (beat CV > 0.15 or OI < 0.35), or no stimulus, regular, and an arrhythmia file tag -> arrhythmia (voltage only: DF/RI/OI, wavefront and rotor dynamics, Arrhythmia sheet). Overrides: cadence_rhythm_overrides.csv in the metrics folder'; ...
+         'Arrhythmia (onset)', 'classified arrhythmia, a file tag containing "arrhythm", or capture ratio outside 1 +/- 0.15 with OI (V) < 0.5'; ...
          'Functional refractory period', 'shortest CL still at 1:1 capture (|DF/pacing - 1| <= 0.15)'; ...
          'Circadian cosinor', sprintf('y = M + A cos(2 pi t/24) + B sin(2 pi t/24) on per-experiment values at CL %g ms (Baseline); p = F-test vs flat mean', opt.RefCL); ...
          '', ''; ...
          'Column', 'Definition'};
-    R = [R; L(:, 2:3)];
+    R = [R; L(:, 2:3); Larr(ismember(Larr(:,1), arr_names), 2:3)];
     writecell(R, out_xlsx, 'Sheet', 'README');
     fprintf('Wrote %s (%d recordings, %d metrics)\n', out_xlsx, height(T), numel(mnames));
 end

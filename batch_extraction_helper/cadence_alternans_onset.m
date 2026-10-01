@@ -89,13 +89,16 @@ function [O, S] = cadence_alternans_onset(T, varargin)
     capt_lost = isfinite(cap) & ~capt_ok;
     df_exceeds = isfinite(cap) & cap > 1 + o.CaptureTol;      % tissue faster than the stimulus: not driven
     arr_oi     = capt_lost & oi < o.OIMin;                     % disorganized and not captured
-    arr = tag_arr | df_exceeds | arr_oi;
+    rhy = lower(strcol(T, 'Rhythm', n));                       % batch rhythm classification
+    arr_cls = rhy == "arrhythmia";
+    arr = tag_arr | df_exceeds | arr_oi | arr_cls;
     arr_source = strings(n, 1);
     for i = 1:n
         src = strings(0, 1);
         if tag_arr(i),    src(end+1) = "tag"; end %#ok<AGROW>
         if df_exceeds(i), src(end+1) = "DF>pacing"; end %#ok<AGROW>
         if arr_oi(i),     src(end+1) = "OI low & capture lost"; end %#ok<AGROW>
+        if arr_cls(i),    src(end+1) = "classified"; end %#ok<AGROW>
         arr_source(i) = strjoin(src, "; ");
     end
 

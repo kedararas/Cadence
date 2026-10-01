@@ -18,16 +18,24 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 %     'Folders'      cellstr of relative folders to process, e.g.
 %                    {'ZT2_8am/R2'} or {'ZT2_8am'} (a folder selects
 %                    everything below it).  Default {} = the whole tree.
+%     'ArrhythmiaPattern' regexp on the file name that marks an arrhythmia
+%                    recording.  A HINT only: every recording is classified
+%                    from its data (cadence_extract_features, RHYTHM) and gets
+%                    the paced or the arrhythmia metric set; the tag decides
+%                    only a regular unpaced recording, and a tag that disagrees
+%                    with the data is noted in the row.  Default
+%                    '(?i)a[r]{1,2}[rh]?h?y+t?h?m', deliberately loose because
+%                    the corpus contains misspellings ("Arhhythmia"); it does
+%                    not match "alternans" or "EAD".
+%     'RhythmOverrides' CSV with columns File and Rhythm (paced | arrhythmia):
+%                    recordings whose file name (with or without .mat) is
+%                    listed skip the classification.  Default
+%                    <output_root>/cadence_rhythm_overrides.csv, if present.
 %     'ExcludePattern' regexp on the file name; matching recordings are NOT
 %                    extracted but are listed (ZT, experiment, condition, CL,
-%                    tag) in <output_root>/cadence_excluded_recordings.csv so
-%                    the onset analysis still knows where arrhythmia occurred.
-%                    Default '(?i)a[r]{1,2}[rh]?h?y+t?h?m' (arrhythmia
-%                    recordings need the arrhythmia-dynamics stages, not the
-%                    regular metrics).  The pattern is deliberately loose
-%                    because the corpus contains misspellings ("Arhhythmia");
-%                    it matches those without matching "alternans" or "EAD".
-%                    Pass '' to extract everything.
+%                    tag) in <output_root>/cadence_excluded_recordings.csv.
+%                    Default '' (extract everything; arrhythmia recordings
+%                    get the arrhythmia metric set).
 %     'NormalizeZT'  true (default): an input folder named ZT<n>_<anything>
 %                    is written as ZT<n> in the output tree (matches the
 %                    lab's existing Metrics layout).  false: mirror names.
@@ -98,7 +106,9 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     p.addParameter('LogFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('MaxFiles', Inf, @isnumeric);
     p.addParameter('NormalizeZT', true, @islogical);
-    p.addParameter('ExcludePattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
+    p.addParameter('ExcludePattern', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('ArrhythmiaPattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
+    p.addParameter('RhythmOverrides', '', @(x) ischar(x) || isstring(x));
     p.addParameter('Jobs', [], @(x) isempty(x) || isstruct(x));
     p.addParameter('Loader', [], @(x) isempty(x) || isa(x, 'function_handle'));
     p.addParameter('LogFcn', [], @(x) isempty(x) || isa(x, 'function_handle'));
@@ -118,6 +128,11 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     if isempty(o.SummaryFile), o.SummaryFile = fullfile(output_root, 'CADENCE_median_summary.xlsx'); end
     if isempty(o.CameraFile),  o.CameraFile  = fullfile(output_root, 'cadence_camera_medians.csv'); end
     if isempty(o.LogFile),     o.LogFile     = fullfile(output_root, 'cadence_batch_log.txt'); end
+    if isempty(o.RhythmOverrides), o.RhythmOverrides = fullfile(output_root, 'cadence_rhythm_overrides.csv'); end
+    overrides = read_overrides(o.RhythmOverrides);
+    if ~isempty(overrides)
+        note(sprintf('%d rhythm override(s) from %s', numel(overrides.file), o.RhythmOverrides));
+    end
 
     if ~exist('compute_lat_50', 'file')
         cadence_batch_paths();
@@ -273,8 +288,17 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 
             % extract
             eo = o.ExtractOpts;  eo.Log = @(s) logf(['   ' s]);
+            eo.NameTag = ~isempty(o.ArrhythmiaPattern) && ~isempty(regexp(job.file, o.ArrhythmiaPattern, 'once'));
+            ov = override_for(overrides, job.file);
+            if ~isempty(ov), eo.Rhythm = ov; logf(sprintf('   rhythm override: %s', ov)); end
             [d, st] = cadence_extract_features(d, eo);
             row.Features = string(strjoin(st.features, ' '));
+            if isfield(d, 'rhythm')
+                row.Rhythm = string(d.rhythm.class);  row.Capture = string(d.rhythm.capture);
+                row.Rhythm_basis = string(d.rhythm.basis);
+                if ~isempty(d.rhythm.note), row.Rhythm_basis = row.Rhythm_basis + " | NOTE: " + string(d.rhythm.note); end
+            end
+            row.Name_tag = double(eo.NameTag);
             row.Filter   = filter_label(d);
             row.Errors   = string(strjoin(st.errors, ' | '));
 
@@ -446,6 +470,30 @@ function write_excluded(jobs, csvfile)
     writetable(E, csvfile);
 end
 
+function ov = read_overrides(csvfile)
+% {file -> rhythm} from cadence_rhythm_overrides.csv (columns File, Rhythm).
+    ov = [];
+    if isempty(csvfile) || ~isfile(csvfile), return; end
+    R = readtable(csvfile, 'TextType', 'string', 'Delimiter', ',');
+    if ~all(ismember({'File', 'Rhythm'}, R.Properties.VariableNames))
+        warning('cadence_batch_extract:overrides', '%s needs columns File and Rhythm; ignored.', csvfile);
+        return;
+    end
+    r = lower(strtrim(R.Rhythm));
+    ok = ismember(r, ["paced", "arrhythmia"]);
+    if any(~ok)
+        warning('cadence_batch_extract:overrides', '%d row(s) of %s have a Rhythm other than paced/arrhythmia; ignored.', nnz(~ok), csvfile);
+    end
+    ov = struct('file', {regexprep(strtrim(R.File(ok)), '\.mat$', '')}, 'rhythm', {r(ok)});
+end
+
+function r = override_for(ov, file)
+    r = '';
+    if isempty(ov), return; end
+    k = find(ov.file == string(regexprep(file, '\.mat$', '')), 1);
+    if ~isempty(k), r = char(ov.rhythm(k)); end
+end
+
 function pdf = maps_pdf_name(metrics_file)
     pdf = regexprep(char(metrics_file), '-metrics\.mat$', '-maps.pdf');
     if strcmp(pdf, char(metrics_file)), pdf = [regexprep(pdf, '\.mat$', '') '-maps.pdf']; end
@@ -474,7 +522,8 @@ function [names, types] = row_schema()
     L = cadence_metric_labels();
     mets = [L(:,1), repmat({'double'}, size(L,1), 1)];
     tail  = {'Features','string'; 'Errors','string'; 'Elapsed_s','double'; 'Extracted_on','string'; ...
-             'Maps_pdf','string'; 'Filter','string'};
+             'Maps_pdf','string'; 'Filter','string'; ...
+             'Rhythm','string'; 'Capture','string'; 'Rhythm_basis','string'; 'Name_tag','double'};
     all = [meta; mets; tail];
     names = all(:,1);  types = all(:,2);
 end

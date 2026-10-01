@@ -76,10 +76,13 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
 %     'Reconvert'    true: rebuild everything from the raw files.  Default false.
 %     'DryRun'       list every recording with what exists for it, then return.
 %     'ExcludePattern' regexp on the conditioned file name; matching
-%                    recordings (default: arrhythmia tags, see
-%                    cadence_batch_extract) are converted and conditioned but
-%                    NOT extracted, and listed in cadence_excluded_recordings.csv.
-%                    '' = extract everything.
+%                    recordings are converted and conditioned but NOT
+%                    extracted, and listed in cadence_excluded_recordings.csv.
+%                    Default '' = extract everything: each recording is
+%                    classified paced (1:1 capture) or arrhythmia from its data
+%                    and gets that metric set (cadence_extract_features, RHYTHM).
+%     'ArrhythmiaPattern', 'RhythmOverrides'  passed to cadence_batch_extract
+%                    (file-name hint; per-file overrides).
 %     'ConditionExcluded' also convert + condition the excluded recordings
 %                    (default true) so they are ready for the arrhythmia
 %                    dynamics module.  false: skip them entirely.
@@ -92,6 +95,25 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
 %     'NormalizeZT', 'MaxFiles', 'BuildSummary', 'SaveMetrics', 'MediansFile',
 %     'SummaryFile', 'LogFile'      passed to cadence_batch_extract.
 %     'ConditioningLog' CSV (default <processed_root>/cadence_conditioning_log.csv)
+%     'SessionPolarity' true (default): the session polarity prior.  Polarity
+%                    is a property of the dye and optics, so within one
+%                    experiment folder (the folder holding the recording
+%                    folders, e.g. ZT2_8am/R2) every camera keeps the
+%                    orientation its STIMULUS-based checks found.  Each
+%                    camera's decision is logged in PolarityLog; a camera whose
+%                    own check fell back to signal shape (arrhythmia, unpaced)
+%                    takes the session's orientation when at least
+%                    PriorMinN paced recordings of that camera agree to
+%                    PriorMinAgree.  Recordings tagged as arrhythmia in the
+%                    file name are processed last in their folder so the
+%                    prior exists; any recording decided without it is
+%                    corrected (conditioned file flipped and re-saved) and
+%                    re-extracted at the end of the run.  This outranks the
+%                    Vm-Ca timing check, which still covers cameras with no
+%                    prior.  false: per-recording decisions only.
+%     'PolarityLog'  CSV (default <processed_root>/cadence_polarity_log.csv)
+%     'PriorMinN'    stimulus-decided recordings needed (default 2)
+%     'PriorMinAgree' fraction of them that must agree (default 0.9)
 %     'LogFcn'       function handle called with every console line (a UI
 %                    console); 'ShouldStop' function handle returning true to
 %                    stop before the next recording (a UI STOP button).
@@ -118,7 +140,9 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
     p.addParameter('Recondition', false, @islogical);
     p.addParameter('Reconvert', false, @islogical);
     p.addParameter('DryRun', false, @islogical);
-    p.addParameter('ExcludePattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
+    p.addParameter('ExcludePattern', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('ArrhythmiaPattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
+    p.addParameter('RhythmOverrides', '', @(x) ischar(x) || isstring(x));
     p.addParameter('ConditionExcluded', true, @islogical);
     p.addParameter('StrictConditioning', true, @islogical);
     p.addParameter('NormalizeZT', true, @islogical);
@@ -130,6 +154,10 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
     p.addParameter('SummaryFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('LogFile', '', @(x) ischar(x) || isstring(x));
     p.addParameter('ConditioningLog', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('SessionPolarity', true, @islogical);
+    p.addParameter('PolarityLog', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('PriorMinN', 2, @isnumeric);
+    p.addParameter('PriorMinAgree', 0.9, @isnumeric);
     p.addParameter('ConvertedSubdir', 'converted', @(x) ischar(x) || isstring(x));
     p.addParameter('ConditionedSubdir', 'conditioned', @(x) ischar(x) || isstring(x));
     p.addParameter('LogFcn', [], @(x) isempty(x) || isa(x, 'function_handle'));
@@ -148,7 +176,8 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
     metrics_root   = char(metrics_root);
     if isempty(o.LogFile),         o.LogFile         = fullfile(metrics_root, 'cadence_batch_log.txt'); end
     if isempty(o.ConditioningLog), o.ConditioningLog = fullfile(processed_root, 'cadence_conditioning_log.csv'); end
-    o.LogFile = char(o.LogFile);  o.ConditioningLog = char(o.ConditioningLog);
+    if isempty(o.PolarityLog),     o.PolarityLog     = fullfile(processed_root, 'cadence_polarity_log.csv'); end
+    o.LogFile = char(o.LogFile);  o.ConditioningLog = char(o.ConditioningLog);  o.PolarityLog = char(o.PolarityLog);
 
     if ~exist('compute_lat_50', 'file'), cadence_batch_paths(); end
     if ~isfolder(raw_root), error('cadence_batch_pipeline:input', 'Raw root not found: %s', raw_root); end
@@ -210,12 +239,31 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
     fclose(fid);
 
     % ---- everything else: convert + condition on demand, then extract -------------
-    T = cadence_batch_extract(raw_root, metrics_root, 'Jobs', jobs, 'Loader', loader, ...
-        'Resume', o.Resume, 'ExcludePattern', o.ExcludePattern, 'ExtractOpts', o.ExtractOpts, ...
-        'NormalizeZT', o.NormalizeZT, 'MaxFiles', o.MaxFiles, 'BuildSummary', o.BuildSummary, ...
+    common = {'Loader', loader, 'ExcludePattern', o.ExcludePattern, 'ExtractOpts', o.ExtractOpts, ...
+        'NormalizeZT', o.NormalizeZT, 'MaxFiles', o.MaxFiles, ...
         'SaveMetrics', o.SaveMetrics, 'MediansFile', o.MediansFile, 'SummaryFile', o.SummaryFile, ...
         'LogFile', o.LogFile, 'LogFcn', o.LogFcn, 'ShouldStop', o.ShouldStop, 'SaveMapsPDF', o.SaveMapsPDF, ...
-        'ExpectFilter', want_filter.label);
+        'ExpectFilter', want_filter.label, 'ArrhythmiaPattern', o.ArrhythmiaPattern, ...
+        'RhythmOverrides', o.RhythmOverrides};
+    T = cadence_batch_extract(raw_root, metrics_root, 'Jobs', jobs, 'Resume', o.Resume, ...
+        'BuildSummary', o.BuildSummary && ~o.SessionPolarity, common{:});
+    if ~o.SessionPolarity, return; end
+
+    % ---- session polarity: redo recordings decided before their session had a prior --
+    redo = jobs([]);
+    if isempty(o.ShouldStop) || ~o.ShouldStop()
+        redo = polarity_redo(jobs(~excluded), o);
+    end
+    if ~isempty(redo)
+        note(sprintf(['Session polarity: %d recording(s) were oriented without (or against) their ' ...
+            'session''s paced recordings; correcting and re-extracting them.'], numel(redo)));
+        T = cadence_batch_extract(raw_root, metrics_root, 'Jobs', redo, 'Resume', false, ...
+            'BuildSummary', o.BuildSummary, common{:});
+    elseif o.BuildSummary
+        % nothing to redo: a resumed pass over the same jobs only rebuilds the summary
+        T = cadence_batch_extract(raw_root, metrics_root, 'Jobs', jobs, 'Resume', true, ...
+            'BuildSummary', true, common{:}, 'MaxFiles', 0);      % last value wins: extract nothing
+    end
 end
 
 
@@ -232,7 +280,10 @@ function d = pipeline_loader(job, logf, o, want)
         d = load_struct(job.conditioned_file);
         logf(sprintf('   conditioned file exists, loaded in %.0f s: %s', toc(t0), job.conditioned_file));
         [same, have] = filter_matches(d, want);
-        if same, return; end
+        if same
+            if o.SessionPolarity, d = session_check(d, job, logf, o); end
+            return;
+        end
         logf(sprintf('   conditioned with filter %s but this run asks for %s: re-conditioning', have, want.label));
         clear d
     end
@@ -270,6 +321,15 @@ function d = pipeline_loader(job, logf, o, want)
 
         % ---- condition ---------------------------------------------------------
         co = o.ConditionOpts;  co.Name = name;  co.Log = @(s) logf(['   ' s]);
+        if o.SessionPolarity && ~isfield(co, 'PolarityPrior')
+            co.PolarityPrior = session_prior(o, job.rel_folder, job.conditioned_file);
+            if ~isempty(co.PolarityPrior)
+                logf(sprintf('   session polarity prior: %s', prior_text(co.PolarityPrior)));
+            end
+        end
+        % camera roles for the Vm-Ca polarity tie-breaker
+        if ~isfield(co, 'VoltageCams') && isfield(o.ExtractOpts, 'VoltageCams'), co.VoltageCams = o.ExtractOpts.VoltageCams; end
+        if ~isfield(co, 'CalciumCams') && isfield(o.ExtractOpts, 'CalciumCams'), co.CalciumCams = o.ExtractOpts.CalciumCams; end
         t0 = tic;
         [d, st] = cadence_condition_data(raw, co);
         clear raw
@@ -292,6 +352,7 @@ function d = pipeline_loader(job, logf, o, want)
         save_atomic(job.conditioned_file, d);
         logf(sprintf('   saved %s in %.0f s', job.conditioned_file, toc(t0)));
         row.Saved = 1;
+        if o.SessionPolarity, record_polarity(o, job, d); end
     catch ME
         row.Errors = string(ME.message);
         row.Elapsed_s = round(toc(t_all));
@@ -363,15 +424,137 @@ function jobs = discover_raw(raw_root, processed_root, metrics_root, o)
     end
     % order: ZT number, experiment number, relative folder, run number (as cadence_batch_extract)
     if ~isempty(jobs)
-        key = zeros(numel(jobs), 3);  relk = cell(numel(jobs), 1);
+        % Recordings tagged as arrhythmia go last within their folder, so their
+        % session's paced recordings set the polarity prior first.
+        key = zeros(numel(jobs), 4);  relk = cell(numel(jobs), 1);
         for j = 1:numel(jobs)
             m = cadence_parse_recording_name(jobs(j).source);
             en = regexp(char(m.experiment), '\d+', 'match', 'once');
-            key(j,:) = [nz(m.ZT), nz(str2double(en)), nz(m.run)];
+            tagged = ~isempty(o.ArrhythmiaPattern) && ~isempty(regexp(jobs(j).file, o.ArrhythmiaPattern, 'once'));
+            key(j,:) = [nz(m.ZT), nz(str2double(en)), double(tagged), nz(m.run)];
             relk{j} = jobs(j).rel_folder;
         end
-        [~, ord] = sortrows([num2cell(key(:,1)), num2cell(key(:,2)), relk, num2cell(key(:,3))]);
+        [~, ord] = sortrows([num2cell(key(:,1)), num2cell(key(:,2)), relk, num2cell(key(:,3)), num2cell(key(:,4))]);
         jobs = jobs(ord);
+    end
+end
+
+% =========================================================================
+%  Session polarity prior
+% =========================================================================
+function record_polarity(o, job, d)
+% Upsert this recording's per-camera polarity decisions into PolarityLog.
+    n = 0;  if isfield(d, 'num_files'), n = double(d.num_files); end
+    rows = table();
+    for c = 1:n
+        sf = sprintf('CAM%d_polarity_source', c);  cf = sprintf('CAM%d_polarity_confidence', c);
+        if ~isfield(d, sf) || ~isfield(d, cf) || isempty(d.(cf)), continue; end
+        conf = double(d.(cf));
+        rows = [rows; table(string(job.rel_folder), string(job.file), string(job.conditioned_file), c, ...
+            string(d.(sf)), conf, double(conf < 0), string(datestr(now, 'yyyy-mm-dd HH:MM:SS')), ...
+            'VariableNames', {'Rel_folder','File','Conditioned_file','Cam','Source','Confidence','Inverted','Logged_on'})]; %#ok<AGROW>
+    end
+    if isempty(rows), return; end
+    L = read_polarity_log(o.PolarityLog);
+    if ~isempty(L), L = L(L.Conditioned_file ~= string(job.conditioned_file), :); end
+    L = [L; rows];
+    folder = fileparts(o.PolarityLog);
+    if ~isempty(folder) && ~isfolder(folder), mkdir(folder); end
+    writetable(L, o.PolarityLog);
+end
+
+function L = read_polarity_log(f)
+    L = table();
+    if ~isfile(f), return; end
+    try
+        L = readtable(f, 'TextType', 'string', 'Delimiter', ',');
+        for c = {'Rel_folder','File','Conditioned_file','Source','Logged_on'}
+            if ~ismember(c{1}, L.Properties.VariableNames), L.(c{1}) = strings(height(L), 1); end
+            if isdatetime(L.(c{1})), L.(c{1}) = string(L.(c{1}), 'yyyy-MM-dd HH:mm:ss'); end
+            L.(c{1}) = string(L.(c{1}));  L.(c{1})(ismissing(L.(c{1}))) = "";
+        end
+    catch
+        L = table();
+    end
+end
+
+function prior = session_prior(o, rel, exclude_file)
+% Per camera: the orientation the STIMULUS-based checks of the other
+% recordings in folder rel agree on (>= PriorMinN of them, >= PriorMinAgree).
+    prior = struct('cam', {}, 'inverted', {}, 'n', {}, 'agree', {});
+    L = read_polarity_log(o.PolarityLog);
+    if isempty(L), return; end
+    L = L(L.Rel_folder == string(rel) & L.Source == "stimulus" & L.Conditioned_file ~= string(exclude_file), :);
+    for c = unique(L.Cam)'
+        inv = L.Inverted(L.Cam == c);
+        n = numel(inv);  f = mean(inv);
+        agree = max(f, 1 - f);
+        if n >= o.PriorMinN && agree >= o.PriorMinAgree
+            prior(end+1) = struct('cam', c, 'inverted', f >= 0.5, 'n', n, 'agree', agree); %#ok<AGROW>
+        end
+    end
+end
+
+function s = prior_text(prior)
+    s = strjoin(arrayfun(@(p) sprintf('CAM%d %s (%d paced, %.0f%%)', p.cam, ...
+        tern(p.inverted, 'inverted', 'upright'), p.n, 100*p.agree), prior, 'UniformOutput', false), ', ');
+end
+
+function d = session_check(d, job, logf, o)
+% An existing conditioned file: log its decisions, then make every camera
+% whose orientation did not come from its own stimulus agree with the
+% session prior.  A corrected file is re-saved.
+    record_polarity(o, job, d);
+    prior = session_prior(o, job.rel_folder, job.conditioned_file);
+    changed = false;
+    for p = prior
+        c = p.cam;
+        sf = sprintf('CAM%d_polarity_source', c);  cf = sprintf('CAM%d_polarity_confidence', c);
+        if ~isfield(d, sf) || ~isfield(d, cf) || isempty(d.(cf)), continue; end
+        if strcmp(char(d.(sf)), 'stimulus'), continue; end
+        was_inv = double(d.(cf)) < 0;
+        if was_inv ~= p.inverted
+            f = sprintf('CAM%d', c);
+            for g = {f, [f '_average'], [f '_average_lowband']}
+                if isfield(d, g{1}) && ~isempty(d.(g{1})), d.(g{1}) = 1 - d.(g{1}); end
+            end
+            logf(sprintf('   session polarity: CAM%d was oriented by %s as %s; its session says %s -> flipped', ...
+                c, char(d.(sf)), tern(was_inv, 'inverted', 'upright'), tern(p.inverted, 'inverted', 'upright')));
+            changed = true;
+        end
+        if ~strcmp(char(d.(sf)), 'session') || was_inv ~= p.inverted
+            d.(sf) = 'session';
+            d.(cf) = (1 - 2*double(p.inverted)) * p.agree;
+            changed = true;
+        end
+    end
+    if changed
+        t0 = tic;
+        save_atomic(job.conditioned_file, d);
+        record_polarity(o, job, d);
+        logf(sprintf('   re-saved %s with the session polarity in %.0f s', job.conditioned_file, toc(t0)));
+    end
+end
+
+function redo = polarity_redo(jobs, o)
+% Jobs with metrics whose cameras were oriented by shape / Vm-Ca lag / an
+% older prior, where the current session prior disagrees or now exists.
+    redo = jobs([]);
+    L = read_polarity_log(o.PolarityLog);
+    if isempty(L) || isempty(jobs), return; end
+    for j = 1:numel(jobs)
+        job = jobs(j);
+        if ~isfile(job.metrics_file), continue; end
+        R = L(L.Conditioned_file == string(job.conditioned_file) & L.Source ~= "stimulus", :);
+        if isempty(R), continue; end
+        prior = session_prior(o, job.rel_folder, job.conditioned_file);
+        for p = prior
+            k = find(R.Cam == p.cam, 1);
+            if ~isempty(k) && (R.Source(k) ~= "session" || logical(R.Inverted(k)) ~= p.inverted)
+                redo(end+1) = job; %#ok<AGROW>
+                break;
+            end
+        end
     end
 end
 
