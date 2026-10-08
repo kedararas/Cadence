@@ -168,6 +168,15 @@ hyphen form (`26-Rat-R5-20251110-8AM-IP-90ms-4v`) and the older underscore
 form (`41_11_11_2025_Rat_WH_12pm_R7_IP_..._175ms_4v`) are read. Rows already
 in the CSVs are refilled from their file names on the next run.
 
+`Acquired_camera` is the camera's own time stamp for each recording
+(`2025-12-08 20:45:39`). `cadence_batch_pipeline` reads it from the raw
+header alone (`cadence_acquisition_time`: the `Date created` line of a `.gsh`
+file, or the TIFF DateTime tag), about a millisecond per recording, with no
+conversion; rows of recordings already extracted are filled too. It needs the
+raw folder to be reachable when the pipeline runs, and it is the acquisition
+computer's clock. The batch reads its CSVs back with fixed column types
+(`cadence_read_table`), so time-stamp columns are not reinterpreted.
+
 The per-camera table (`cadence_camera_medians.csv`) also carries `Clock`,
 `Acquired` and, on the calcium camera's row, the pair metrics **Vm-Ca delay**,
 **Ca-AP coupling** and **Ca-AP in-phase fraction**.

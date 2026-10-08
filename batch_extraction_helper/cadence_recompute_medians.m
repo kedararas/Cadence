@@ -65,7 +65,7 @@ function T = cadence_recompute_medians(output_root, varargin)
         m = cadence_parse_recording_name(f, o.LightsOnHour);
         r = struct('ZT', m.ZT, 'ZT_folder', m.zt_folder, 'Experiment', m.experiment, 'Condition', m.condition, ...
                    'CL_ms', m.CL_ms, 'Tag', m.tag, 'Run', m.run, 'Rat', m.rat, 'Date', m.date, 'Clock', m.clock, ...
-                   'Acquired', m.acquired, 'ZT_source', m.zt_source, ...
+                   'Acquired', m.acquired, 'Acquired_camera', "", 'ZT_source', m.zt_source, ...
                    'Stim', m.stim, 'File', string([m.base '.mat']), 'Source', "", 'Metrics_file', string(f));
         for q = 1:size(L,1), r.(L{q,1}) = NaN; end
         r.Features = ""; r.Errors = ""; r.Elapsed_s = NaN; r.Extracted_on = ""; r.Maps_pdf = ""; r.Filter = "";
@@ -93,7 +93,7 @@ function T = cadence_recompute_medians(output_root, varargin)
             fn = fieldnames(v);
             for q = 1:numel(fn), r.(fn{q}) = v.(fn{q}); end
             cm = struct();
-            for q = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','File','Source','Metrics_file'}
+            for q = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','Acquired_camera','File','Source','Metrics_file'}
                 cm.(q{1}) = r.(q{1});
             end
             try

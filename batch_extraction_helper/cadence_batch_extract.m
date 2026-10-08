@@ -38,6 +38,10 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 %                    ZT_source says which.  Acquired is the labelled date and
 %                    clock ("2025-11-10 08:00").  Both are (re)filled for rows
 %                    already in the CSVs, from their file names.
+%                    Acquired_camera is the camera's own time stamp
+%                    ("2025-12-08 20:45:39"), read from the raw header by
+%                    cadence_batch_pipeline (job field acquired_at; header
+%                    only, no conversion) and filled for existing rows too.
 %     'ExcludePattern' regexp on the file name; matching recordings are NOT
 %                    extracted but are listed (ZT, experiment, condition, CL,
 %                    tag) in <output_root>/cadence_excluded_recordings.csv.
@@ -193,7 +197,8 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     rows = {};
     if isfile(o.MediansFile)
         try
-            rows = table_to_rows(readtable(o.MediansFile, 'TextType', 'string', 'Delimiter', ','));
+            [sn, st] = row_schema();
+            rows = table_to_rows(cadence_read_table(o.MediansFile, sn(strcmp(st, 'string'))));
             if o.Resume
                 note(sprintf('Resuming: %d recording(s) already in %s', numel(rows), o.MediansFile));
             else
@@ -206,6 +211,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     end
     Tcam = read_camera_table(o.CameraFile);
     [rows, Tcam] = refresh_meta(rows, Tcam, o.LightsOnHour);   % ZT / clock / acquired from the file label
+    [rows, Tcam] = refresh_camera_time(rows, Tcam, jobs);      % camera time stamp, when the caller read it
     done_sources = cellfun(@(r) char(r.Source), rows, 'UniformOutput', false);
     done_metrics = cellfun(@(r) char(r.Metrics_file), rows, 'UniformOutput', false);
     find_row = @(job) find(strcmp(done_sources, job.source) | strcmp(done_metrics, job.metrics_file), 1);
@@ -419,6 +425,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 
     T = rows_to_table(rows);
     if ~isempty(rows), cadence_write_table(T, o.MediansFile, logf); end
+    if height(Tcam) > 0, cadence_write_table(Tcam, o.CameraFile, logf); end   % refreshed label / time columns
     have_cam = ismember(T.Source, Tcam.Source) | ismember(T.Metrics_file, Tcam.Metrics_file);
     if any(~have_cam)
         logf(sprintf(['%d recording(s) in the medians CSV have no per-camera rows (extracted before ' ...
@@ -568,7 +575,7 @@ end
 function [names, types] = row_schema()
     meta  = {'ZT','double'; 'ZT_folder','string'; 'Experiment','string'; 'Condition','string'; ...
              'CL_ms','double'; 'Tag','string'; 'Run','double'; 'Rat','double'; 'Date','string'; ...
-             'Clock','string'; 'Acquired','string'; 'ZT_source','string'; ...
+             'Clock','string'; 'Acquired','string'; 'Acquired_camera','string'; 'ZT_source','string'; ...
              'Stim','string'; 'File','string'; 'Source','string'; 'Metrics_file','string'};
     L = cadence_metric_labels();
     mets = [L(:,1), repmat({'double'}, size(L,1), 1)];
@@ -598,7 +605,7 @@ end
 function m = camera_meta(row)
 % Identity columns carried into the per-camera table (Source / Metrics_file
 % are the keys a re-run uses to replace its own rows).
-    f = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','File','Source','Metrics_file'};
+    f = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','Acquired_camera','File','Source','Metrics_file'};
     m = struct();
     for k = 1:numel(f), m.(f{k}) = row.(f{k}); end
 end
@@ -617,7 +624,8 @@ function Tcam = read_camera_table(csvfile)
     [Tcam, mnames] = cadence_camera_medians([], 'Meta', meta);
     if isempty(csvfile) || ~isfile(csvfile), return; end
     try
-        R = readtable(csvfile, 'TextType', 'string', 'Delimiter', ',');
+        mf = fieldnames(meta);
+        R = cadence_read_table(csvfile, [mf(~structfun(@isnumeric, meta)); {'Camera'; 'Signal'}]);
     catch ME
         warning('cadence_batch_extract:cameraCSV', 'Could not read %s (%s); starting it fresh.', csvfile, ME.message);
         return;
@@ -649,6 +657,7 @@ function row = new_row(job, lights_on)
     end
     m = cadence_parse_recording_name(job.source, lights_on);
     row.Acquired = m.acquired;  row.ZT_source = m.zt_source;
+    if isfield(job, 'acquired_at') && ~isempty(job.acquired_at), row.Acquired_camera = string(job.acquired_at); end
     row.ZT = m.ZT;  row.ZT_folder = string(job.zt_folder);  row.Experiment = string(m.experiment);
     row.Condition = m.condition;  row.CL_ms = m.CL_ms;  row.Tag = m.tag;  row.Run = m.run;  row.Rat = m.rat;
     row.Date = m.date;  row.Clock = m.clock;  row.Stim = m.stim;  row.File = string(m.file);
@@ -678,6 +687,23 @@ function [rows, Tcam] = refresh_meta(rows, Tcam, lights_on)
         if ~isnan(m.ZT), Tcam.ZT(sel & isnan(Tcam.ZT)) = m.ZT; end
         Tcam.Clock(sel & strlength(Tcam.Clock) == 0) = m.clock;
         Tcam.Acquired(sel) = m.acquired;
+    end
+end
+
+function [rows, Tcam] = refresh_camera_time(rows, Tcam, jobs)
+% Fill Acquired_camera from the jobs' acquired_at (the raw header's time stamp).
+    if isempty(jobs) || ~isfield(jobs, 'acquired_at'), return; end
+    has = ~cellfun(@isempty, {jobs.acquired_at});
+    if ~any(has), return; end
+    src = string({jobs(has).source});  met = string({jobs(has).metrics_file});  at = string({jobs(has).acquired_at});
+    for i = 1:numel(rows)
+        k = find(src == string(rows{i}.Source) | met == string(rows{i}.Metrics_file), 1);
+        if ~isempty(k), rows{i}.Acquired_camera = at(k); end
+    end
+    if isempty(Tcam) || height(Tcam) == 0, return; end
+    for k = 1:numel(at)
+        sel = Tcam.Source == src(k) | Tcam.Metrics_file == met(k);
+        if any(sel), Tcam.Acquired_camera(sel) = at(k); end
     end
 end
 

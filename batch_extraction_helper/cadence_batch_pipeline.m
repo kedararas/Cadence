@@ -392,7 +392,7 @@ function jobs = discover_raw(raw_root, processed_root, metrics_root, o)
 % recording folder's parent path is mirrored under the output roots.
     jobs = struct('source', {}, 'file', {}, 'zt_folder', {}, 'rat_folder', {}, 'zt_out', {}, ...
                   'out_dir', {}, 'metrics_file', {}, 'rel_folder', {}, ...
-                  'raw_folder', {}, 'raw_entry', {}, 'mat_base', {}, 'converted_file', {}, 'conditioned_file', {});
+                  'raw_folder', {}, 'raw_entry', {}, 'acquired_at', {}, 'mat_base', {}, 'converted_file', {}, 'conditioned_file', {});
     folders = strrep(o.Folders, '\', '/');
     folders = regexprep(folders, '/+$', '');
 
@@ -430,6 +430,7 @@ function jobs = discover_raw(raw_root, processed_root, metrics_root, o)
             j.converted_file   = fullfile(processed_root, char(o.ConvertedSubdir), rel_parent, [base '.mat']);
             j.raw_folder       = folder;
             j.raw_entry        = plan(e);
+            j.acquired_at      = char(cadence_acquisition_time(plan(e)));   % camera time stamp: header only, no conversion
             j.mat_base         = base;
             m = cadence_parse_recording_name(j.source, o.LightsOnHour);
             j.zt_folder  = char(m.zt_folder);
@@ -486,7 +487,7 @@ function L = read_polarity_log(f)
     L = table();
     if ~isfile(f), return; end
     try
-        L = readtable(f, 'TextType', 'string', 'Delimiter', ',');
+        L = cadence_read_table(f, {'Rel_folder', 'File', 'Conditioned_file', 'Source', 'Logged_on'});
         for c = {'Rel_folder','File','Conditioned_file','Source','Logged_on'}
             if ~ismember(c{1}, L.Properties.VariableNames), L.(c{1}) = strings(height(L), 1); end
             if isdatetime(L.(c{1})), L.(c{1}) = string(L.(c{1}), 'yyyy-MM-dd HH:mm:ss'); end
@@ -710,7 +711,7 @@ function append_cond_log(csvfile, row)
     rows = {};
     if isfile(csvfile)
         try
-            old = readtable(csvfile, 'TextType', 'string', 'Delimiter', ',');
+            old = cadence_read_table(csvfile, names(strcmp(types, 'string')));
             for i = 1:height(old)
                 r = struct();
                 for k = 1:numel(names)
