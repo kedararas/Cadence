@@ -15,9 +15,11 @@ function [Tcam, names] = cadence_camera_medians(d, varargin)
 %                           AP alternans, Vm-only substrate, voltage QC)
 %     calcium camera k : cadence_recording_medians(d, 'VoltageCam', 0, 'CalciumCam', k)
 %                        -> calcium metrics (CaTD, decay, tau, Ca alternans, Ca QC)
-%   Metrics that need a voltage-calcium pair (V-Ca delay, Ca-AP coupling,
-%   combined substrate risk) or that are properties of the recording (beats,
-%   pacing rate) stay in the recording-level table and are not repeated here.
+%   V-Ca delay, Ca-AP coupling and the Ca-AP in-phase fraction need a
+%   voltage-calcium pair; they are listed on the CALCIUM camera's row (the
+%   camera they are stored on: the first calcium camera, paired with the first
+%   voltage camera).  The combined substrate risk and properties of the
+%   recording (beats, pacing rate) stay in the recording-level table.
 %
 %   Camera roles come from metrics.camera_roles (written by
 %   cadence_extract_features).  Files extracted before roles were recorded
@@ -98,14 +100,13 @@ end
 function tf = metric_family(n, fam)
 % Voltage: *_v and v_* (per-camera QC) plus capture ratio.  Calcium: ca_*,
 % catd*, *_ca.  Pair and recording-level metrics belong to neither.
-    pair = {'vc_delay', 'ca_ap_coupling', 'ca_ap_inphase', 'risk_map', 'risk_global', ...
-            'n_beats', 'pacing_hz', 'v_ca_identical'};
+    pair = {'risk_map', 'risk_global', 'n_beats', 'pacing_hz', 'v_ca_identical'};
     n = n(:);
     switch fam
         case 'voltage'
             tf = endsWith(n, '_v') | startsWith(n, 'v_') | strcmp(n, 'capture_ratio');
         case 'calcium'
-            tf = startsWith(n, 'ca_') | startsWith(n, 'catd') | endsWith(n, '_ca');
+            tf = startsWith(n, 'ca_') | startsWith(n, 'catd') | endsWith(n, '_ca') | strcmp(n, 'vc_delay');
     end
     tf = tf & ~ismember(n, pair);
 end

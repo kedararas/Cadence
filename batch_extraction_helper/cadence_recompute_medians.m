@@ -30,6 +30,7 @@ function T = cadence_recompute_medians(output_root, varargin)
     p.addParameter('SaveMapsPDF', false, @islogical);
     p.addParameter('ExcludePattern', '', @(x) ischar(x) || isstring(x));
     p.addParameter('ArrhythmiaPattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
+    p.addParameter('LightsOnHour', 6, @isnumeric);     % ZT from the labelled clock, see cadence_parse_recording_name
     p.parse(varargin{:});
     o = p.Results;
     o.Folders = cellstr(o.Folders); o.Folders = o.Folders(~cellfun(@isempty, o.Folders));
@@ -61,9 +62,10 @@ function T = cadence_recompute_medians(output_root, varargin)
     for k = 1:numel(files)
         f = fullfile(files(k).folder, files(k).name);
         t0 = tic;
-        m = cadence_parse_recording_name(f);
+        m = cadence_parse_recording_name(f, o.LightsOnHour);
         r = struct('ZT', m.ZT, 'ZT_folder', m.zt_folder, 'Experiment', m.experiment, 'Condition', m.condition, ...
                    'CL_ms', m.CL_ms, 'Tag', m.tag, 'Run', m.run, 'Rat', m.rat, 'Date', m.date, 'Clock', m.clock, ...
+                   'Acquired', m.acquired, 'ZT_source', m.zt_source, ...
                    'Stim', m.stim, 'File', string([m.base '.mat']), 'Source', "", 'Metrics_file', string(f));
         for q = 1:size(L,1), r.(L{q,1}) = NaN; end
         r.Features = ""; r.Errors = ""; r.Elapsed_s = NaN; r.Extracted_on = ""; r.Maps_pdf = ""; r.Filter = "";
@@ -91,7 +93,7 @@ function T = cadence_recompute_medians(output_root, varargin)
             fn = fieldnames(v);
             for q = 1:numel(fn), r.(fn{q}) = v.(fn{q}); end
             cm = struct();
-            for q = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File','Source','Metrics_file'}
+            for q = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','File','Source','Metrics_file'}
                 cm.(q{1}) = r.(q{1});
             end
             try
@@ -121,13 +123,13 @@ function T = cadence_recompute_medians(output_root, varargin)
     end
 
     T = struct2table_uniform(rows);
-    writetable(T, o.MediansFile);
+    cadence_write_table(T, o.MediansFile);
     fprintf('wrote %s\n', o.MediansFile);
     cams = cams(~cellfun(@isempty, cams));
     Tcam = table();
     if ~isempty(cams)
         Tcam = vertcat(cams{:});
-        writetable(Tcam, o.CameraFile);
+        cadence_write_table(Tcam, o.CameraFile);
         fprintf('wrote %s (%d camera rows)\n', o.CameraFile, height(Tcam));
     end
     if o.BuildSummary && ~isempty(rows)

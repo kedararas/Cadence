@@ -83,6 +83,17 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
 %                    and gets that metric set (cadence_extract_features, RHYTHM).
 %     'ArrhythmiaPattern', 'RhythmOverrides'  passed to cadence_batch_extract
 %                    (file-name hint; per-file overrides).
+%     'LightsOnHour' clock hour of lights-on (default 6), used to derive ZT from
+%                    the clock in the file label when the label has no explicit
+%                    ZT; see cadence_batch_extract.
+%
+%   DISK SPACE.  Free space is checked before every converted, conditioned and
+%   metrics file is written.  When it runs short the run stops with one clear
+%   message; nothing half-written is left behind, the CSV logs are written
+%   through cadence_write_table (a full disk cannot truncate them), and a later
+%   run with Resume continues from the recording that did not fit.  Converted
+%   files roughly add a third to the footprint: 'SaveConverted', false skips
+%   them when the raw files stay available.
 %     'ConditionExcluded' also convert + condition the excluded recordings
 %                    (default true) so they are ready for the arrhythmia
 %                    dynamics module.  false: skip them entirely.
@@ -143,6 +154,7 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
     p.addParameter('ExcludePattern', '', @(x) ischar(x) || isstring(x));
     p.addParameter('ArrhythmiaPattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
     p.addParameter('RhythmOverrides', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('LightsOnHour', 6, @isnumeric);
     p.addParameter('ConditionExcluded', true, @islogical);
     p.addParameter('StrictConditioning', true, @islogical);
     p.addParameter('NormalizeZT', true, @islogical);
@@ -233,6 +245,10 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
                 pipeline_loader(job, logf, o, []);    % not extracted: an existing file is kept as is
             catch ME
                 logf(sprintf('   FAILED: %s', ME.message));
+                if strcmp(ME.identifier, 'cadence:diskFull')
+                    logf('DISK FULL: stopping the run. Free space on the processed volume and run again.');
+                    fclose(fid);  T = table();  return;
+                end
             end
         end
     end
@@ -244,14 +260,17 @@ function T = cadence_batch_pipeline(raw_root, processed_root, metrics_root, vara
         'SaveMetrics', o.SaveMetrics, 'MediansFile', o.MediansFile, 'SummaryFile', o.SummaryFile, ...
         'LogFile', o.LogFile, 'LogFcn', o.LogFcn, 'ShouldStop', o.ShouldStop, 'SaveMapsPDF', o.SaveMapsPDF, ...
         'ExpectFilter', want_filter.label, 'ArrhythmiaPattern', o.ArrhythmiaPattern, ...
-        'RhythmOverrides', o.RhythmOverrides};
+        'RhythmOverrides', o.RhythmOverrides, 'LightsOnHour', o.LightsOnHour};
     T = cadence_batch_extract(raw_root, metrics_root, 'Jobs', jobs, 'Resume', o.Resume, ...
         'BuildSummary', o.BuildSummary && ~o.SessionPolarity, common{:});
     if ~o.SessionPolarity, return; end
 
     % ---- session polarity: redo recordings decided before their session had a prior --
     redo = jobs([]);
-    if isempty(o.ShouldStop) || ~o.ShouldStop()
+    out_of_space = cadence_require_space(metrics_root) < 2e9 || cadence_require_space(processed_root) < 2e9;
+    if out_of_space
+        note('Disk nearly full: the session-polarity re-check is skipped until space is freed.');
+    elseif isempty(o.ShouldStop) || ~o.ShouldStop()
         redo = polarity_redo(jobs(~excluded), o);
     end
     if ~isempty(redo)
@@ -412,7 +431,7 @@ function jobs = discover_raw(raw_root, processed_root, metrics_root, o)
             j.raw_folder       = folder;
             j.raw_entry        = plan(e);
             j.mat_base         = base;
-            m = cadence_parse_recording_name(j.source);
+            m = cadence_parse_recording_name(j.source, o.LightsOnHour);
             j.zt_folder  = char(m.zt_folder);
             j.rat_folder = char(m.rat_folder);
             if isnan(m.ZT), j.zt_out = ''; else, j.zt_out = sprintf('ZT%d', m.ZT); end
@@ -428,7 +447,7 @@ function jobs = discover_raw(raw_root, processed_root, metrics_root, o)
         % session's paced recordings set the polarity prior first.
         key = zeros(numel(jobs), 4);  relk = cell(numel(jobs), 1);
         for j = 1:numel(jobs)
-            m = cadence_parse_recording_name(jobs(j).source);
+            m = cadence_parse_recording_name(jobs(j).source, o.LightsOnHour);
             en = regexp(char(m.experiment), '\d+', 'match', 'once');
             tagged = ~isempty(o.ArrhythmiaPattern) && ~isempty(regexp(jobs(j).file, o.ArrhythmiaPattern, 'once'));
             key(j,:) = [nz(m.ZT), nz(str2double(en)), double(tagged), nz(m.run)];
@@ -460,7 +479,7 @@ function record_polarity(o, job, d)
     L = [L; rows];
     folder = fileparts(o.PolarityLog);
     if ~isempty(folder) && ~isfolder(folder), mkdir(folder); end
-    writetable(L, o.PolarityLog);
+    cadence_write_table(L, o.PolarityLog);
 end
 
 function L = read_polarity_log(f)
@@ -629,8 +648,22 @@ function save_atomic(file, d)
     out_dir = fileparts(file);
     if ~isfolder(out_dir), mkdir(out_dir); end
     tmp = [file '.part'];
+    % Enough room?  v7.3 compresses these structs to roughly half their size in
+    % memory.  A save to a full disk fails with "appears to be corrupt".
+    w = whos('d');
+    cadence_require_space(out_dir, 0.7 * w.bytes + 0.5e9, 'file');
     cmos_all_data = d; %#ok<NASGU>
-    save(tmp, 'cmos_all_data', '-v7.3');
+    try
+        save(tmp, 'cmos_all_data', '-v7.3');
+    catch ME
+        if isfile(tmp), delete(tmp); end              % never leave a truncated .part behind
+        free = cadence_require_space(out_dir);
+        if free < 1e9
+            error('cadence:diskFull', 'The disk is full (%.2f GB free on the volume holding %s): %s', ...
+                  free / 1e9, out_dir, ME.message);
+        end
+        rethrow(ME);
+    end
     if isfile(file), delete(file); end
     movefile(tmp, file);
 end
@@ -719,5 +752,5 @@ function append_cond_log(csvfile, row)
     end
     out_dir = fileparts(csvfile);
     if ~isempty(out_dir) && ~isfolder(out_dir), mkdir(out_dir); end
-    writetable(T, csvfile);
+    cadence_write_table(T, csvfile);
 end

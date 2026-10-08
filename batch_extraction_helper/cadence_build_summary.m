@@ -80,8 +80,10 @@ function cadence_build_summary(T, out_xlsx, varargin)
     [outdir, stem] = fileparts(out_xlsx);
 
     % ---- Sheet 1: Recordings ----------------------------------------------------
-    meta_cols = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File'};
-    meta_lbl  = {'ZT','Experiment','Condition','CL (ms)','Tag','Run','Date','File'};
+    meta_cols = {'ZT','ZT_source','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','File'};
+    meta_lbl  = {'ZT','ZT source','Experiment','Condition','CL (ms)','Tag','Run','Date','Clock','Acquired','File'};
+    keep = ismember(meta_cols, T.Properties.VariableNames);     % older tables lack the newer columns
+    meta_cols = meta_cols(keep);  meta_lbl = meta_lbl(keep);
     C = [meta_lbl, mlabels', {'Beats/Errors'}];
     body = cell(height(T), numel(C));
     for i = 1:height(T)
@@ -191,7 +193,7 @@ function cadence_build_summary(T, out_xlsx, varargin)
     % ---- Arrhythmia: one row per arrhythmia recording, its own metric set -------------
     if any(is_arr)
         A = Tall(is_arr, :);
-        meta = intersect({'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File', ...
+        meta = intersect({'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','File', ...
                           'Rhythm','Capture','Rhythm_basis','Name_tag'}, A.Properties.VariableNames, 'stable');
         A = A(:, [meta, Larr(:,1)']);
         hdr = [meta, Larr(:,2)'];
@@ -259,8 +261,8 @@ function n = write_per_camera(Tc, out_xlsx, outdir, stem)
     L = L(ismember(L(:,1), Tc.Properties.VariableNames), :);
     has = cellfun(@(c) any(isfinite(double(Tc.(c)))), L(:,1));
     L = L(has, :);                                  % drop metrics no camera has
-    meta_cols = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File','Camera','Signal'};
-    meta_lbl  = {'ZT','Experiment','Condition','CL (ms)','Tag','Run','Date','File','Camera','Signal'};
+    meta_cols = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','File','Camera','Signal'};
+    meta_lbl  = {'ZT','Experiment','Condition','CL (ms)','Tag','Run','Date','Clock','Acquired','File','Camera','Signal'};
     keep = ismember(meta_cols, Tc.Properties.VariableNames);
     meta_cols = meta_cols(keep);  meta_lbl = meta_lbl(keep);
     C = [meta_lbl, L(:,2)'];

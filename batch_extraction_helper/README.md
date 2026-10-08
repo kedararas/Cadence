@@ -154,6 +154,38 @@ does the same for a whole existing metrics tree (about 15 s per file to load
 plus a few seconds to render). `cadence_maps_pdf(metrics_struct, pdf_file)`
 renders one recording.
 
+## ZT, acquisition time and disk space
+
+**ZT and acquisition time** come from the file label
+(`cadence_parse_recording_name`). An explicit label wins: a `ZT<n>` folder, or
+`ZT<n>` / `CT<n>` in the file name. Otherwise ZT is derived from the clock in
+the label, ZT = clock hour − lights-on (mod 24), with lights on at 06:00 by
+default (`'LightsOnHour'`): 8AM → ZT2, 12PM → ZT6, 4PM → ZT10, 8PM → ZT14,
+12AM → ZT18, 4AM → ZT22. `ZT_source` records which. `Clock` is the labelled
+clock and `Acquired` the labelled date and time (`2025-11-10 08:00`); this is
+the nominal time in the label, not the camera's own time stamp. Both the
+hyphen form (`26-Rat-R5-20251110-8AM-IP-90ms-4v`) and the older underscore
+form (`41_11_11_2025_Rat_WH_12pm_R7_IP_..._175ms_4v`) are read. Rows already
+in the CSVs are refilled from their file names on the next run.
+
+The per-camera table (`cadence_camera_medians.csv`) also carries `Clock`,
+`Acquired` and, on the calcium camera's row, the pair metrics **Vm-Ca delay**,
+**Ca-AP coupling** and **Ca-AP in-phase fraction**.
+
+**Disk space.** A save to a full disk fails inside MATLAB with "Unable to
+write to file … because it appears to be corrupt" or "No space left on
+device". The batch now checks the free space before every converted,
+conditioned and metrics file and **stops the run** with one clear message when
+it is short (`cadence_require_space`); nothing half-written is left behind.
+The CSVs are written through `cadence_write_table` (temporary file, then
+rename), so a full disk can no longer truncate the medians table to 0 bytes.
+If the medians CSV is lost anyway, a resumed run **adopts** every recording
+whose `-metrics.mat` exists: its medians are read from the saved file (about
+10–20 s) instead of extracting it again. Budget roughly 2 GB per conditioned
+file and 2.5 GB per metrics file (4 GB for an arrhythmia recording) at
+256 × 256 × 4000; the converted copies add about 0.65 GB each and can be
+skipped with `'SaveConverted', false` (UI: untick *Keep converted files*).
+
 ## Paced and arrhythmia recordings
 
 Each recording is classified from its own data before extraction

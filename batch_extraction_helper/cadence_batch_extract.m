@@ -31,6 +31,13 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 %                    recordings whose file name (with or without .mat) is
 %                    listed skip the classification.  Default
 %                    <output_root>/cadence_rhythm_overrides.csv, if present.
+%     'LightsOnHour' clock hour of lights-on, default 6.  When the label has no
+%                    explicit ZT (no ZT<n> folder or ZT<n> in the file name), ZT
+%                    is derived from the clock in the file label: ZT = clock
+%                    hour - LightsOnHour (mod 24), e.g. 8AM -> ZT2, 8PM -> ZT14.
+%                    ZT_source says which.  Acquired is the labelled date and
+%                    clock ("2025-11-10 08:00").  Both are (re)filled for rows
+%                    already in the CSVs, from their file names.
 %     'ExcludePattern' regexp on the file name; matching recordings are NOT
 %                    extracted but are listed (ZT, experiment, condition, CL,
 %                    tag) in <output_root>/cadence_excluded_recordings.csv.
@@ -41,7 +48,16 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 %                    lab's existing Metrics layout).  false: mirror names.
 %     'Files'        cellstr of file-name patterns (regexp) to keep, default {}.
 %     'Resume'       true (default): skip recordings already listed in the
-%                    medians CSV whose metrics file exists.  false: redo all.
+%                    medians CSV whose metrics file exists.  A recording whose
+%                    metrics file exists but has NO row (the CSV was lost or
+%                    truncated) is ADOPTED: its medians are recomputed from the
+%                    saved metrics file instead of extracting it again.
+%                    false: redo all.
+%
+%   DISK SPACE.  The free space is checked before each metrics file is saved;
+%   when it is short the run STOPS with one message ('cadence:diskFull')
+%   instead of failing every remaining recording, and the CSVs are written
+%   through cadence_write_table so a full disk cannot truncate them.
 %     'DryRun'       list what would be processed and return (default false).
 %     'SaveMetrics'  write the *-metrics.mat files (default true).
 %     'ExtractOpts'  struct passed to cadence_extract_features (FOV_mm, ...).
@@ -109,6 +125,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     p.addParameter('ExcludePattern', '', @(x) ischar(x) || isstring(x));
     p.addParameter('ArrhythmiaPattern', '(?i)a[r]{1,2}[rh]?h?y+t?h?m', @(x) ischar(x) || isstring(x));
     p.addParameter('RhythmOverrides', '', @(x) ischar(x) || isstring(x));
+    p.addParameter('LightsOnHour', 6, @isnumeric);
     p.addParameter('Jobs', [], @(x) isempty(x) || isstruct(x));
     p.addParameter('Loader', [], @(x) isempty(x) || isa(x, 'function_handle'));
     p.addParameter('LogFcn', [], @(x) isempty(x) || isa(x, 'function_handle'));
@@ -188,6 +205,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
         end
     end
     Tcam = read_camera_table(o.CameraFile);
+    [rows, Tcam] = refresh_meta(rows, Tcam, o.LightsOnHour);   % ZT / clock / acquired from the file label
     done_sources = cellfun(@(r) char(r.Source), rows, 'UniformOutput', false);
     done_metrics = cellfun(@(r) char(r.Metrics_file), rows, 'UniformOutput', false);
     find_row = @(job) find(strcmp(done_sources, job.source) | strcmp(done_metrics, job.metrics_file), 1);
@@ -199,6 +217,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     expect = string(o.ExpectFilter);
     filter_ok = @(f) expect == "" || f == expect || (f == "" && ~startsWith(expect, "hybrid"));
     todo = false(numel(jobs), 1);  refilter = 0;
+    adopt = false(numel(jobs), 1);        % metrics file on disk but no row: summarize it, do not re-extract
     for j = 1:numel(jobs)
         r = find_row(jobs(j));
         already = ~isempty(r) && isfile(jobs(j).metrics_file);
@@ -206,8 +225,13 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
             already = false;  refilter = refilter + 1;
         end
         todo(j) = ~(o.Resume && already);
+        adopt(j) = o.Resume && isempty(r) && isfile(jobs(j).metrics_file);
     end
     note(sprintf('%d to process, %d skipped (already done)', nnz(todo), nnz(~todo)));
+    if any(adopt)
+        note(sprintf(['%d of them already have a metrics file but no row in the medians CSV: ' ...
+                      'their medians are read from the saved file (no re-extraction).'], nnz(adopt)));
+    end
     if o.Resume && refilter > 0
         note(sprintf('%d of them were extracted with a different filter than %s and are redone', refilter, expect));
     end
@@ -247,7 +271,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
                 k = find_row(job);
                 if ~isempty(k) && n > 0
                     rows{k}.Maps_pdf = string(pdf);
-                    writetable(rows_to_table(rows), o.MediansFile);
+                    cadence_write_table(rows_to_table(rows), o.MediansFile, logf);
                 end
             catch ME
                 logf(sprintf('[maps only] %s FAILED: %s', job.metrics_file, ME.message));
@@ -267,9 +291,25 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
         t_all = tic;
         logf(sprintf('[%d/%d] %s', jj, numel(idx), job.source));
 
-        row = new_row(job);
+        row = new_row(job, o.LightsOnHour);
         Tc = read_camera_table('');
         row.Extracted_on = string(datestr(now, 'yyyy-mm-dd HH:MM:SS'));
+        row.Name_tag = double(~isempty(o.ArrhythmiaPattern) && ~isempty(regexp(job.file, o.ArrhythmiaPattern, 'once')));
+        disk_full = false;
+        if adopt(j)
+            [done, row, Tc] = adopt_metrics(job, row, filter_ok, logf);
+            if done
+                row.Elapsed_s = round(toc(t_all));
+                [rows, done_sources, done_metrics, Tcam] = keep_row(rows, done_sources, done_metrics, Tcam, row, Tc, job, find_row);
+                cadence_write_table(rows_to_table(rows), o.MediansFile, logf);
+                cadence_write_table(Tcam, o.CameraFile, logf);
+                n_new = n_new + 1;
+                continue;
+            end
+            row = new_row(job, o.LightsOnHour);                 % could not be adopted: extract it
+            Tc = read_camera_table('');
+            row.Extracted_on = string(datestr(now, 'yyyy-mm-dd HH:MM:SS'));
+        end
         try
             % load (or build, when the caller supplied a Loader) + schema gate
             t0 = tic;
@@ -308,8 +348,20 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
                 t0 = tic;
                 if ~isfolder(job.out_dir), mkdir(job.out_dir); end
                 tmp = [job.metrics_file '.part'];
+                w = whos('d');                       % v7.3 compresses to roughly half of this
+                cadence_require_space(job.out_dir, 0.7 * w.bytes + 0.5e9, 'metrics file');
                 cmos_all_data = d; %#ok<NASGU>
-                save(tmp, 'cmos_all_data', '-v7.3');
+                try
+                    save(tmp, 'cmos_all_data', '-v7.3');
+                catch ME
+                    if isfile(tmp), delete(tmp); end      % never leave a truncated .part behind
+                    free = cadence_require_space(job.out_dir);
+                    if free < 1e9
+                        error('cadence:diskFull', 'The disk is full (%.2f GB free on the volume holding %s): %s', ...
+                              free / 1e9, job.out_dir, ME.message);
+                    end
+                    rethrow(ME);
+                end
                 clear cmos_all_data
                 if isfile(job.metrics_file), delete(job.metrics_file); end
                 movefile(tmp, job.metrics_file);
@@ -346,29 +398,27 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
         catch ME
             row.Errors = string(sprintf('%s%s', char(row.Errors), [' FATAL: ' ME.message]));
             logf(sprintf('   FAILED: %s', ME.message));
+            disk_full = strcmp(ME.identifier, 'cadence:diskFull');
+        end
+        if disk_full
+            % Nothing was saved for this recording and its row is left as it
+            % was, so the next run picks up exactly here.
+            logf('DISK FULL: stopping the run. Free space on the output volume and run again; Resume continues from this recording.');
+            break;
         end
         row.Elapsed_s = round(toc(t_all));
         logf(sprintf('   done in %.0f s', row.Elapsed_s));
 
         % replace or append, then persist
-        k = find_row(job);
-        if isempty(k)
-            rows{end+1} = row; %#ok<AGROW>
-            done_sources{end+1} = job.source; %#ok<AGROW>
-            done_metrics{end+1} = job.metrics_file; %#ok<AGROW>
-        else
-            rows{k} = row;
-        end
+        [rows, done_sources, done_metrics, Tcam] = keep_row(rows, done_sources, done_metrics, Tcam, row, Tc, job, find_row);
         T = rows_to_table(rows);
-        writetable(T, o.MediansFile);
-        old = Tcam.Source == string(job.source) | Tcam.Metrics_file == string(job.metrics_file);
-        Tcam = [Tcam(~old, :); Tc];
-        writetable(Tcam, o.CameraFile);
+        cadence_write_table(T, o.MediansFile, logf);
+        cadence_write_table(Tcam, o.CameraFile, logf);
         n_new = n_new + 1;
     end
 
     T = rows_to_table(rows);
-    if ~isempty(rows), writetable(T, o.MediansFile); end
+    if ~isempty(rows), cadence_write_table(T, o.MediansFile, logf); end
     have_cam = ismember(T.Source, Tcam.Source) | ismember(T.Metrics_file, Tcam.Metrics_file);
     if any(~have_cam)
         logf(sprintf(['%d recording(s) in the medians CSV have no per-camera rows (extracted before ' ...
@@ -518,7 +568,8 @@ end
 function [names, types] = row_schema()
     meta  = {'ZT','double'; 'ZT_folder','string'; 'Experiment','string'; 'Condition','string'; ...
              'CL_ms','double'; 'Tag','string'; 'Run','double'; 'Rat','double'; 'Date','string'; ...
-             'Clock','string'; 'Stim','string'; 'File','string'; 'Source','string'; 'Metrics_file','string'};
+             'Clock','string'; 'Acquired','string'; 'ZT_source','string'; ...
+             'Stim','string'; 'File','string'; 'Source','string'; 'Metrics_file','string'};
     L = cadence_metric_labels();
     mets = [L(:,1), repmat({'double'}, size(L,1), 1)];
     tail  = {'Features','string'; 'Errors','string'; 'Elapsed_s','double'; 'Extracted_on','string'; ...
@@ -547,7 +598,7 @@ end
 function m = camera_meta(row)
 % Identity columns carried into the per-camera table (Source / Metrics_file
 % are the keys a re-run uses to replace its own rows).
-    f = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','File','Source','Metrics_file'};
+    f = {'ZT','Experiment','Condition','CL_ms','Tag','Run','Date','Clock','Acquired','File','Source','Metrics_file'};
     m = struct();
     for k = 1:numel(f), m.(f{k}) = row.(f{k}); end
 end
@@ -589,17 +640,100 @@ function Tcam = read_camera_table(csvfile)
     Tcam = out;
 end
 
-function row = new_row(job)
+function row = new_row(job, lights_on)
+    if nargin < 2, lights_on = 6; end
     [names, types] = row_schema();
     row = struct();
     for k = 1:numel(names)
         if strcmp(types{k}, 'double'), row.(names{k}) = NaN; else, row.(names{k}) = ""; end
     end
-    m = cadence_parse_recording_name(job.source);
+    m = cadence_parse_recording_name(job.source, lights_on);
+    row.Acquired = m.acquired;  row.ZT_source = m.zt_source;
     row.ZT = m.ZT;  row.ZT_folder = string(job.zt_folder);  row.Experiment = string(m.experiment);
     row.Condition = m.condition;  row.CL_ms = m.CL_ms;  row.Tag = m.tag;  row.Run = m.run;  row.Rat = m.rat;
     row.Date = m.date;  row.Clock = m.clock;  row.Stim = m.stim;  row.File = string(m.file);
     row.Source = string(job.source);  row.Metrics_file = string(job.metrics_file);
+end
+
+function [rows, Tcam] = refresh_meta(rows, Tcam, lights_on)
+% (Re)derive ZT, ZT_source, Clock and Acquired from the file label for rows
+% read back from the CSVs, so recordings extracted before these columns
+% existed (or before ZT was taken from the clock) carry them too.
+    for i = 1:numel(rows)
+        src = char(rows{i}.Source);  if isempty(src), src = char(rows{i}.File); end
+        if isempty(src), continue; end
+        m = cadence_parse_recording_name(src, lights_on);
+        if isnan(rows{i}.ZT) || startsWith(string(rows{i}.ZT_source), "clock") || rows{i}.ZT_source == ""
+            if ~isnan(m.ZT), rows{i}.ZT = m.ZT;  rows{i}.ZT_source = m.zt_source; end
+        end
+        if strlength(rows{i}.Clock) == 0, rows{i}.Clock = m.clock; end
+        rows{i}.Acquired = m.acquired;
+    end
+    if isempty(Tcam) || height(Tcam) == 0, return; end
+    [usrc, ~, ic] = unique(Tcam.Source);
+    for u = 1:numel(usrc)
+        src = char(usrc(u));  sel = ic == u;
+        if isempty(src), continue; end
+        m = cadence_parse_recording_name(src, lights_on);
+        if ~isnan(m.ZT), Tcam.ZT(sel & isnan(Tcam.ZT)) = m.ZT; end
+        Tcam.Clock(sel & strlength(Tcam.Clock) == 0) = m.clock;
+        Tcam.Acquired(sel) = m.acquired;
+    end
+end
+
+function [rows, done_sources, done_metrics, Tcam] = keep_row(rows, done_sources, done_metrics, Tcam, row, Tc, job, find_row)
+% Replace or append a recording's row and its per-camera rows.
+    k = find_row(job);
+    if isempty(k)
+        rows{end+1} = row;
+        done_sources{end+1} = job.source;
+        done_metrics{end+1} = job.metrics_file;
+    else
+        rows{k} = row;
+    end
+    old = Tcam.Source == string(job.source) | Tcam.Metrics_file == string(job.metrics_file);
+    Tcam = [Tcam(~old, :); Tc];
+end
+
+function [done, row, Tc] = adopt_metrics(job, row, filter_ok, logf)
+% A metrics file exists but the medians CSV has no row for it (the CSV was
+% lost, or truncated by a full disk).  Read the saved file and fill the row
+% from it: seconds instead of a re-extraction.  done = false (extract it
+% after all) when the file cannot be read, holds no metrics, or was made with
+% another temporal filter than this run asks for.
+    done = false;  Tc = table();
+    t0 = tic;
+    try
+        S = load(job.metrics_file);
+        if isfield(S, 'cmos_all_data'), d = S.cmos_all_data; else, fn = fieldnames(S); d = S.(fn{1}); end
+        clear S
+        if ~isfield(d, 'ep_metrics') || ~isstruct(d.ep_metrics) || isempty(fieldnames(d.ep_metrics))
+            logf('   existing metrics file holds no metrics: extracting again');  return;
+        end
+        row.Filter = filter_label(d);
+        if ~filter_ok(row.Filter)
+            logf(sprintf('   existing metrics file was made with filter "%s": extracting again', row.Filter));  return;
+        end
+        row.Features = string(strjoin(fieldnames(d.ep_metrics)', ' '));
+        if isfield(d, 'rhythm') && isstruct(d.rhythm)
+            row.Rhythm = string(d.rhythm.class);  row.Capture = string(d.rhythm.capture);
+            row.Rhythm_basis = string(d.rhythm.basis);
+            if ~isempty(d.rhythm.note), row.Rhythm_basis = row.Rhythm_basis + " | NOTE: " + string(d.rhythm.note); end
+        end
+        vals = cadence_recording_medians(d);
+        fn = fieldnames(vals);
+        for k = 1:numel(fn), row.(fn{k}) = vals.(fn{k}); end
+        row.Metrics_file = string(job.metrics_file);
+        f = dir(job.metrics_file);
+        row.Extracted_on = string(datestr(f.datenum, 'yyyy-mm-dd HH:MM:SS'));
+        pdf = maps_pdf_name(job.metrics_file);
+        if isfile(pdf), row.Maps_pdf = string(pdf); end
+        Tc = cadence_camera_medians(d, 'Meta', camera_meta(row));
+        done = true;
+        logf(sprintf('   adopted the existing metrics file in %.0f s (medians read, no re-extraction)', toc(t0)));
+    catch ME
+        logf(sprintf('   existing metrics file could not be used (%s): extracting again', ME.message));
+    end
 end
 
 function T = rows_to_table(rows)
