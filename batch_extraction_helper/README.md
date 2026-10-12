@@ -203,8 +203,15 @@ right:
 
 - **Stimulus present** (a regular train on `analog1`): the voltage dominant
   frequency is compared with the pacing rate. Within max(5%, 0.55 FFT bin) is
-  1:1 capture, so the recording is **paced**. Anything else (2:1 block, lost
-  capture, an arrhythmia outlasting the drive) is **arrhythmia**.
+  1:1 capture, so the recording is **paced**. Within 15% it is also **paced**
+  if the signal is organized (OI >= 0.5) and the file name does not say
+  arrhythmia: 5% is finer than the frequency resolution of a few-second
+  recording at slow pacing, and alternans broadens the peak. Beyond that,
+  arrhythmia needs evidence: a DF above the pacing rate (the tissue outruns
+  the drive), a disorganized signal (OI < 0.5), or a file-name arrhythmia tag
+  is **arrhythmia**. What is left, an organized signal slower than the
+  stimulus, is 2:1 block or lost capture and is **uncaptured**: the heart is
+  not being driven, but it is not in arrhythmia.
 - **No stimulus**: an irregular rhythm (beat-interval CV of the tissue-mean
   trace > 0.15, or median OI < 0.35) is **arrhythmia**. A regular one cannot
   be told from sinus rhythm by the data alone: it is **arrhythmia** if the file
@@ -213,6 +220,9 @@ right:
 Paced recordings get every metric: voltage activation, rise, repolarization,
 APD80 and APD50, local CV (FOV), alternans and DF/RI/OI; calcium Vm-Ca delay
 (dual mapping), rise, decay, CaTD80 and CaTD50, tau and alternans.
+Uncaptured recordings get the paced metric set and stay in the paced sheets,
+labelled `uncaptured` in the `Rhythm` column so an analysis can drop them;
+they are never counted as arrhythmia.
 Arrhythmia recordings get voltage only: DF/RI/OI, then the phase movie,
 wavefront dynamics and phase-singularity/rotor dynamics, computed as the
 Feature Extraction app does and stored in the same `ep_metrics` fields, so
@@ -225,8 +235,11 @@ behind the decision, plus a NOTE when the file name disagrees) and
 (wavefronts per frame, tracked wavefronts and PS per second, fractionation /
 collision / termination / breakthrough / reentry rates, PS lifespan, stable
 rotors, longest rotor, time with a rotor) in the workbook's **Arrhythmia**
-sheet; every other sheet summarizes the paced recordings. The alternans onset
-analysis treats classified arrhythmia like a file tag.
+sheet; every other sheet summarizes the paced and uncaptured recordings. The
+alternans onset analysis uses the class only where its own rules (file tag,
+DF above the pacing rate, lost capture with OI < 0.5) cannot judge a
+recording; the class never turns an organized, blocked or uncaptured
+recording into an arrhythmia.
 
 To overrule the classification for particular recordings, put
 `cadence_rhythm_overrides.csv` (columns `File`, `Rhythm` = paced | arrhythmia)

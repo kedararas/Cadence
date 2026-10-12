@@ -66,10 +66,23 @@ function [d, status] = cadence_extract_features(d, opts)
 %                     a recording gets (see RHYTHM below).  'paced'/'arrhythmia'
 %                     skip the classification (an override).
 %     NameTag         true when the file name says arrhythmia (default false).
-%                     A hint only: it decides a REGULAR unpaced recording, which
-%                     the data cannot tell apart from sinus rhythm.
-%     CaptureTol      1:1 capture tolerance, fraction of the pacing rate
+%                     A hint only: it decides the cases the data cannot -- a
+%                     REGULAR unpaced recording (sinus or arrhythmia?) and a
+%                     paced recording that is organized but not in 1:1 capture
+%                     (block / lost capture, or a slow organized arrhythmia?).
+%     CaptureTol      strict 1:1 capture tolerance, fraction of the pacing rate
 %                     (default 0.05; window = max(tol * rate, 0.55 FFT bin)).
+%                     Inside it a recording is paced, whatever else is true.
+%     CaptureTolWide  wide 1:1 tolerance (default 0.15, the tolerance
+%                     cadence_alternans_onset uses).  Between the strict and the
+%                     wide window a recording is paced only if its signal is
+%                     organized and its file name does not say arrhythmia: 5% is
+%                     finer than the DF resolution of a few-second recording at
+%                     slow pacing (0.25 Hz bins are 6% of 4 Hz), and alternans
+%                     broadens the peak.
+%     CaptureOIMin    paced recording outside the strict window: organization
+%                     index below which it is arrhythmia (default 0.50, as
+%                     cadence_alternans_onset 'OIMin').
 %     BeatCVMax       unpaced beat-interval CV above which a recording is
 %                     irregular, i.e. arrhythmia (default 0.15).
 %     OIMin           unpaced organization index below which a recording is
@@ -98,15 +111,25 @@ function [d, status] = cadence_extract_features(d, opts)
 %   RHYTHM  (classified per recording before any metric is extracted)
 %     Voltage dominant frequency (DF) is computed first, on the first
 %     complexity camera (voltage; calcium if the rig has no voltage camera).
-%       stimulus present and regular -> DF vs pacing rate: within tolerance =
-%         1:1 capture -> PACED; otherwise (2:1 block, lost capture, an
-%         arrhythmia outlasting the drive) -> ARRHYTHMIA.
+%       stimulus present and regular -> DF vs pacing rate:
+%         within CaptureTol (strict 1:1)                         -> PACED;
+%         within CaptureTolWide, organized, no arrhythmia tag    -> PACED;
+%         DF above the wide window (tissue outruns the drive)    -> ARRHYTHMIA;
+%         disorganized (OI < CaptureOIMin)                       -> ARRHYTHMIA;
+%         otherwise, file name says arrhythmia (NameTag)         -> ARRHYTHMIA;
+%         otherwise (organized, DF below the pacing rate)        -> UNCAPTURED:
+%           2:1 block or lost capture. The heart is not being driven, but it
+%           is not in arrhythmia.
 %       no usable stimulus -> beat-interval CV of the tissue-mean trace and the
 %         median OI: irregular (CV > BeatCVMax or OI < OIMin) -> ARRHYTHMIA;
 %         regular -> ARRHYTHMIA if NameTag, else PACED (sinus / spontaneous).
 %     PACED: every stage above (voltage: activation, APD80 + ExtraAPDLevels,
 %       repolarization, rise, local CV, DF/RI/OI, alternans; calcium: V-Ca delay,
 %       CaTD, decay, rise, tau, alternans).
+%     UNCAPTURED: the PACED stage set, so the recording stays in the tables as
+%       it did before the classification existed; rhythm.class and the Rhythm
+%       column say 'uncaptured' so analyses can drop it. It is never counted
+%       as an arrhythmia.
 %     ARRHYTHMIA: voltage cameras only -- DF/RI/OI (complexity_data), then the
 %       phase movie, wavefront dynamics (wavefront_data) and phase-singularity
 %       / rotor dynamics (rotor_data), as the app's extract_arr_wave_dynamics
@@ -192,7 +215,7 @@ function [d, status] = cadence_extract_features(d, opts)
     d.rhythm = R;
     logf(sprintf('Rhythm: %s  [%s]', upper(R.class), R.basis));
     if ~isempty(R.note), logf(['NOTE: ' R.note]); end
-    arrhythmia = strcmp(R.class, 'arrhythmia');
+    arrhythmia = strcmp(R.class, 'arrhythmia');     % 'uncaptured' takes the paced stage set
     if arrhythmia
         % voltage only: no calcium stages, DF/RI/OI and dynamics on voltage cameras
         P.ArrCams = P.VoltageCams;
@@ -371,7 +394,7 @@ function P = resolve_options(d, opts)
         'ComplexityCams', [], ...
         'ExtraAPDLevels', 50, ...
         'LowBand', 'auto', ...
-        'Rhythm', 'auto', 'NameTag', false, 'CaptureTol', 0.05, 'BeatCVMax', 0.15, 'OIMin', 0.35, ...
+        'Rhythm', 'auto', 'NameTag', false, 'CaptureTol', 0.05, 'CaptureTolWide', 0.15, 'CaptureOIMin', 0.50, 'BeatCVMax', 0.15, 'OIMin', 0.35, ...
         'Log', @(s) fprintf('%s\n', s));
     P = def;
     fn = fieldnames(opts);
@@ -1112,12 +1135,30 @@ function R = classify_rhythm(d, P, cx_info)
     if isfinite(fp)
         R.pacing_hz = fp;
         R.capture = classify_ratio(R.df_hz, fp, bin_hz, P.CaptureTol);
+        % Not in 1:1 capture is not the same as arrhythmia. Arrhythmia needs
+        % evidence: the tissue outruns the stimulus, or the signal is
+        % disorganized. An organized signal at or below the pacing rate is
+        % block or lost capture (cadence_alternans_onset draws the same line).
+        w = max(P.CaptureTolWide * fp, 0.55 * max(bin_hz, 0));  % wide 1:1 window
+        near   = isfinite(R.df_hz) && abs(R.df_hz - fp) <= w;
+        faster = isfinite(R.df_hz) && R.df_hz > fp + w;
+        disorganized = isfinite(R.oi) && R.oi < P.CaptureOIMin;
         if strcmp(R.capture, '1:1')
-            R.class = 'paced';
+            R.class = 'paced';       why = '1:1 capture';
+        elseif near && ~disorganized && ~P.NameTag
+            % inside the wide window: 1:1 at the resolution of the DF estimate
+            R.capture = '1:1';
+            R.class = 'paced';       why = sprintf('1:1 capture (within %g%%, organized, OI %.2f)', 100 * P.CaptureTolWide, R.oi);
+        elseif faster
+            R.class = 'arrhythmia';  why = sprintf('%s capture, tissue faster than the stimulus', R.capture);
+        elseif disorganized
+            R.class = 'arrhythmia';  why = sprintf('%s capture, disorganized (OI %.2f < %.2f)', R.capture, R.oi, P.CaptureOIMin);
+        elseif P.NameTag
+            R.class = 'arrhythmia';  why = sprintf('%s capture, organized (OI %.2f); file name says arrhythmia', R.capture, R.oi);
         else
-            R.class = 'arrhythmia';
+            R.class = 'uncaptured';  why = sprintf('%s capture, organized (OI %.2f): block or lost capture, not arrhythmia', R.capture, R.oi);
         end
-        R.basis = sprintf('stimulus %.2f Hz, DF %.2f Hz: %s capture', fp, R.df_hz, R.capture);
+        R.basis = sprintf('stimulus %.2f Hz, DF %.2f Hz: %s', fp, R.df_hz, why);
     else
         R.capture = 'unpaced';
         R.beat_cv = beat_interval_cv(X, mask, P.acqFreq, R.df_hz);

@@ -43,7 +43,11 @@ function [O, S] = cadence_alternans_onset(T, varargin)
 %                       DF exceeds the pacing rate by more than CaptureTol
 %                       (capture ratio > 1 + CaptureTol) is flagged arrhythmic:
 %                       the tissue is running faster than the stimulus.  Ratios
-%                       below 1 are block (2:1 etc.), not arrhythmia.
+%                       below 1 are block (2:1 etc.), not arrhythmia.  The batch
+%                       rhythm class ('Rhythm' column = arrhythmia) also flags a
+%                       recording, but only where these rules have nothing to
+%                       say; it never turns an organized, captured-or-blocked
+%                       recording into an arrhythmia.
 %     'RequireConsecutive'  metric-based onsets (V / Ca alternans, concordant,
 %                       discordant) must also hold at the next shorter CL,
 %                       unless it is the shortest CL recorded (default true).
@@ -90,7 +94,14 @@ function [O, S] = cadence_alternans_onset(T, varargin)
     df_exceeds = isfinite(cap) & cap > 1 + o.CaptureTol;      % tissue faster than the stimulus: not driven
     arr_oi     = capt_lost & oi < o.OIMin;                     % disorganized and not captured
     rhy = lower(strcol(T, 'Rhythm', n));                       % batch rhythm classification
-    arr_cls = rhy == "arrhythmia";
+    % The classification adds what the metric rules cannot see (unpaced, irregular
+    % rhythms; arrhythmia recordings that carry no capture ratio). It must not
+    % override them: a recording whose capture ratio is known, is not above the
+    % stimulus, and whose signal is organized is block or lost capture whatever
+    % its class says. (Metrics extracted before the classifier separated
+    % 'uncaptured' from 'arrhythmia' still carry the older, wider label.)
+    block_not_arr = isfinite(cap) & ~df_exceeds & ~(oi < o.OIMin);
+    arr_cls = rhy == "arrhythmia" & ~block_not_arr;
     arr = tag_arr | df_exceeds | arr_oi | arr_cls;
     arr_source = strings(n, 1);
     for i = 1:n
