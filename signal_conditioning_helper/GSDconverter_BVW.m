@@ -155,6 +155,17 @@ end
 
 fclose(fid_gsd);                              % close only this handle
 
+% A .gsd shorter than its header promises (acquisition stopped early, or the
+% file was cut in a copy) makes fread return fewer values, and the reshape
+% below would then fail with an error that does not name the file.
+if numel(rawPx) ~= nTotal
+    per_frame = numXPixels * numYPixels;
+    error('GSDconverter_BVW:truncated', ...
+        ['%s holds %d of the %d frames its header declares (%d of %d pixel values): ' ...
+         'the file is truncated or incomplete.'], ...
+        gsd_path, floor(numel(rawPx) / max(per_frame, 1)), pageFrames + 1, numel(rawPx), nTotal);
+end
+
 % ── Reshape pixel data ────────────────────────────────────────────────────────
 % fread fills column-major; x-axis (columns) is fastest, so dim 1 = numXPixels
 cmosData = reshape(rawPx, numXPixels, numYPixels, pageFrames + 1);

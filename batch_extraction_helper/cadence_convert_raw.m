@@ -16,6 +16,14 @@ function d = cadence_convert_raw(entry, fs_default, logf)
 %   when not given -- the app's Sampling Frequency field default) if the raw
 %   files do not carry it (.tif always, .gsh never).
 %
+%   A camera other than the first that cannot be read (a truncated or missing
+%   .gsd, typically a recording made with one camera while the rig declared
+%   two) is left out instead of failing the recording: the cameras that were
+%   read are kept, num_files counts those, and num_files_declared and
+%   cameras_unreadable (cam, file, reason) record what happened.  Camera 1
+%   failing is still an error, and so is a gap (camera 2 unreadable but
+%   camera 3 fine), because camera numbers carry the signal assignment.
+%
 %   The struct is NOT schema-checked here; the caller runs
 %   schema_gate(d, "raw", name) and decides what to do with a failure, as the
 %   Signal Conditioning app does before conditioning.
@@ -30,12 +38,20 @@ function d = cadence_convert_raw(entry, fs_default, logf)
     cams = entry.cam_names;
     ncam = numel(cams);
     d = struct();
+    bad = struct('cam', {}, 'file', {}, 'reason', {});
 
     if strcmp(entry.ext, 'tif')
         for c = 1:ncam
             cam_field = sprintf('CAM%d', c);
             img_field = sprintf('CAM%d_image', c);
-            vol = double(tiffreadVolume(fullfile(entry.folder, cams{c})));
+            try
+                vol = double(tiffreadVolume(fullfile(entry.folder, cams{c})));
+            catch ME
+                if c == 1, rethrow(ME); end
+                bad(end+1) = struct('cam', c, 'file', cams{c}, 'reason', ME.message); %#ok<AGROW>
+                logf(sprintf('%s <- %s: NOT READ (%s)', cam_field, cams{c}, ME.message));
+                continue;
+            end
             d.(cam_field) = vol;
 
             first_frame = vol(:,:,1);
@@ -51,8 +67,15 @@ function d = cadence_convert_raw(entry, fs_default, logf)
         end
     else   % gsh / gsd
         for c = 1:ncam
-            d = GSDconverter_BVW(d, entry.folder, cams{c}, c);
             cam_field = sprintf('CAM%d', c);
+            try
+                d = GSDconverter_BVW(d, entry.folder, cams{c}, c);
+            catch ME
+                if c == 1, rethrow(ME); end
+                bad(end+1) = struct('cam', c, 'file', cams{c}, 'reason', ME.message); %#ok<AGROW>
+                logf(sprintf('%s <- %s: NOT READ (%s)', cam_field, cams{c}, ME.message));
+                continue;
+            end
             if isfield(d, cam_field)
                 logf(sprintf('%s <- %s (%dx%dx%d)', cam_field, cams{c}, ...
                     size(d.(cam_field),1), size(d.(cam_field),2), size(d.(cam_field),3)));
@@ -62,6 +85,21 @@ function d = cadence_convert_raw(entry, fs_default, logf)
         end
     end
     d.num_files = ncam;
+    if ~isempty(bad)
+        % keep the cameras that were read; they must be CAM1..CAMk with no gap
+        got = arrayfun(@(c) isfield(d, sprintf('CAM%d', c)) && ~isempty(d.(sprintf('CAM%d', c))), 1:ncam);
+        k = find(~got, 1) - 1;
+        if any(got(k+1:end))
+            error('cadence_convert_raw:cameraGap', ...
+                'CAM%d could not be read (%s) but a later camera could: camera numbers would no longer match their signals.', ...
+                bad(1).cam, bad(1).reason);
+        end
+        d.num_files = k;
+        d.num_files_declared = ncam;
+        d.cameras_unreadable = bad;
+        logf(sprintf('%d of %d camera file(s) could not be read; the recording continues with %d camera(s).', ...
+            numel(bad), ncam, k));
+    end
 
     if ~isfield(d, 'acqFreq')
         d.acqFreq = fs_default;

@@ -109,6 +109,19 @@ function [d, status] = cadence_condition_data(d, opts)
     if ~isfield(d, 'num_files') || isempty(d.num_files)
         d.num_files = nnz(cellfun(@(f) ~isempty(regexp(f, '^CAM\d+$', 'once')), fieldnames(d)));
     end
+    % num_files is a header field and can overstate what the file holds (a
+    % voltage-only recording saved with num_files = 2 has no CAM2 array).
+    % Every stage below loops over 1:num_files, so an absent camera made each
+    % stage fail part-way: CAM1 was processed, but anything a stage does after
+    % its camera loop was skipped -- the low-band ensemble average among them,
+    % which silently turned the hybrid filter off for that recording alone.
+    has_cam = arrayfun(@(i) isfield(d, sprintf('CAM%d', i)) && ~isempty(d.(sprintf('CAM%d', i))), 1:double(d.num_files));
+    k = find(~has_cam, 1) - 1;
+    if ~isempty(k) && k >= 1 && ~any(has_cam(k+1:end))
+        logf(sprintf('num_files = %d but only CAM1..CAM%d hold data; conditioning %d camera(s).', double(d.num_files), k, k));
+        if ~isfield(d, 'num_files_declared'), d.num_files_declared = double(d.num_files); end
+        d.num_files = k;
+    end
     if isfield(d, 'conditioned') && isequal(d.conditioned, true)
         % The app refuses these ("re-conditioning over-smooths"); so do we.
         error('cadence_condition_data:alreadyConditioned', ...
