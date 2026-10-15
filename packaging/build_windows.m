@@ -1,9 +1,9 @@
 function build_windows(version, outDir)
 %BUILD_WINDOWS  Build the CADENCE Windows app and installer with MATLAB Compiler.
 %
-%   build_windows                      % version 1.0.1, output C:\CADENCE_build
-%   build_windows('1.0.2')
-%   build_windows('1.0.2', 'D:\builds\cadence')
+%   build_windows                      % version 1.0.2, output C:\CADENCE_build
+%   build_windows('1.0.3')
+%   build_windows('1.0.3', 'D:\builds\cadence')
 %
 %   Run on Windows with MATLAB R2025b and MATLAB Compiler installed
 %   (check: which mcc). MATLAB Compiler cannot cross-compile, so the macOS
@@ -35,7 +35,7 @@ function build_windows(version, outDir)
 %   "unrecognized app" warning (More info -> Run anyway).
 %   See WINDOWS_BUILD_CHECKLIST.md for signing.
 
-    if nargin < 1 || isempty(version), version = '1.0.1'; end
+    if nargin < 1 || isempty(version), version = '1.0.2'; end
     if nargin < 2 || isempty(outDir),  outDir  = 'C:\CADENCE_build'; end
     if ~ispc
         error('build_windows:platform', 'Run this on Windows; build the macOS app from the Mac compiler task.');

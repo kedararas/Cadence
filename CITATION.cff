@@ -17,8 +17,8 @@ authors:
 repository-code: "https://github.com/kedararas/Cadence"
 url: "https://github.com/kedararas/Cadence"
 license: MIT
-version: "1.0.1"            # update to match each release/tag
-date-released: "2026-09-30" # update on release
+version: "1.0.2"            # update to match each release/tag
+date-released: "2026-10-15" # update on release
 keywords:
   - cardiac electrophysiology
   - optical mapping
