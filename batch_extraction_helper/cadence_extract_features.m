@@ -65,6 +65,12 @@ function [d, status] = cadence_extract_features(d, opts)
 %     Rhythm          'auto' (default) | 'paced' | 'arrhythmia'.  Which metric set
 %                     a recording gets (see RHYTHM below).  'paced'/'arrhythmia'
 %                     skip the classification (an override).
+%     ArrDynamics     true (default) | false.  On the arrhythmia path, run the
+%                     phase movie, wavefront dynamics and rotor / PS dynamics
+%                     (about 5-7 min per 4000-frame recording).  false keeps the
+%                     classification and DF/RI/OI and skips the dynamics; the
+%                     skip is saved as metrics.rhythm.dynamics = 'skipped'.
+%                     Paced recordings are unaffected.
 %     NameTag         true when the file name says arrhythmia (default false).
 %                     A hint only: it decides the cases the data cannot -- a
 %                     REGULAR unpaced recording (sinus or arrhythmia?) and a
@@ -133,7 +139,8 @@ function [d, status] = cadence_extract_features(d, opts)
 %     ARRHYTHMIA: voltage cameras only -- DF/RI/OI (complexity_data), then the
 %       phase movie, wavefront dynamics (wavefront_data) and phase-singularity
 %       / rotor dynamics (rotor_data), as the app's extract_arr_wave_dynamics
-%       and extract_arr_ps_dynamics compute them. Calcium is not extracted.
+%       and extract_arr_ps_dynamics compute them (ArrDynamics = false stops
+%       after DF/RI/OI). Calcium is not extracted.
 %       With the hybrid filter, DF/RI/OI use the conditioned band and the
 %       phase, wavefronts and rotors the low band (the band of Fig 5).
 %     The decision and the numbers behind it are saved as metrics.rhythm.
@@ -226,6 +233,10 @@ function [d, status] = cadence_extract_features(d, opts)
         end
         keep = false(size(cx_em.complexity_data, 1), 1);  keep(P.ArrCams(P.ArrCams <= numel(keep))) = true;
         cx_em.complexity_data(~keep, :) = {[]};
+        if ~P.ArrDynamics && ~isempty(P.ArrCams)
+            d.rhythm.dynamics = 'skipped';
+            logf('Arrhythmia dynamics OFF: DF/RI/OI only (no wavefront or rotor tracking).');
+        end
     end
 
     % ---- stages, in the app's order ---------------------------------------
@@ -233,8 +244,8 @@ function [d, status] = cadence_extract_features(d, opts)
     if arrhythmia
         stages = { ...
             'complexity_data', ~isempty(P.ArrCams), @(dd) cx_em; ...
-            'wavefront_data',  ~isempty(P.ArrCams), @(dd) stage_wave_dynamics(dd, P); ...
-            'rotor_data',      ~isempty(P.ArrCams), @(dd) stage_ps_dynamics(dd, P)};
+            'wavefront_data',  ~isempty(P.ArrCams) && P.ArrDynamics, @(dd) stage_wave_dynamics(dd, P); ...
+            'rotor_data',      ~isempty(P.ArrCams) && P.ArrDynamics, @(dd) stage_ps_dynamics(dd, P)};
     else
     stages = { ...
         'act_times',     P.DoActTime,    @(dd) stage_act_time(dd, P); ...
@@ -394,7 +405,7 @@ function P = resolve_options(d, opts)
         'ComplexityCams', [], ...
         'ExtraAPDLevels', 50, ...
         'LowBand', 'auto', ...
-        'Rhythm', 'auto', 'NameTag', false, 'CaptureTol', 0.05, 'CaptureTolWide', 0.15, 'CaptureOIMin', 0.50, 'BeatCVMax', 0.15, 'OIMin', 0.35, ...
+        'Rhythm', 'auto', 'ArrDynamics', true, 'NameTag', false, 'CaptureTol', 0.05, 'CaptureTolWide', 0.15, 'CaptureOIMin', 0.50, 'BeatCVMax', 0.15, 'OIMin', 0.35, ...
         'Log', @(s) fprintf('%s\n', s));
     P = def;
     fn = fieldnames(opts);
@@ -1090,7 +1101,8 @@ function R = classify_rhythm(d, P, cx_info)
 % Decide which metric set a recording gets.  See RHYTHM in the header.
     R = struct('class', 'paced', 'basis', '', 'capture', '', 'cam', NaN, ...
                'pacing_hz', NaN, 'df_hz', NaN, 'ri', NaN, 'oi', NaN, 'beat_cv', NaN, ...
-               'name_tag', logical(P.NameTag), 'note', '');
+               'name_tag', logical(P.NameTag), 'note', '', ...
+               'dynamics', '');                 % 'skipped' when ArrDynamics = false cut the arrhythmia path short
 
     % camera: first complexity (voltage) camera, else the first calcium camera
     cam = [P.ComplexityCams(:); P.VoltageCams(:); P.CalciumCams(:)];

@@ -19,7 +19,10 @@ function fig = cadence_pipeline_ui()
 %             the batch never guesses which camera is which), the
 %             extraction field of view, and the run options (dry run, resume,
 %             re-condition, re-convert, keep converted files, condition the
-%             arrhythmia-tagged recordings, save a PDF of the cardiac maps)
+%             arrhythmia-tagged recordings, save a PDF of the cardiac maps,
+%             and arrhythmia dynamics: untick to give arrhythmia recordings
+%             DF/RI/OI only, skipping the ~5-7 min/recording wavefront and
+%             rotor tracking)
 %   RUN PIPELINE runs cadence_batch_pipeline with those settings; every
 %   console line of the batch is echoed in the text area (newest on top, as
 %   in the other modules) and STOP ends the run before the next recording,
@@ -107,6 +110,8 @@ function fig = cadence_pipeline_ui()
     h.FOV = uieditfield(g4, 'numeric', 'Value', 20, 'Limits', [0.1 Inf], 'FontWeight', 'bold');
     h.FOV.Layout.Row = 4;  h.FOV.Layout.Column = 8;
     h.MapsPDF     = cb(g4, 5, [1 4], 'Save a PDF of the cardiac maps for each recording (<name>-maps.pdf next to the metrics file)', false);
+    % Off: arrhythmia recordings get DF/RI/OI only.  Paced recordings are unaffected.
+    h.ArrDyn      = cb(g4, 5, [5 8], 'Arrhythmia dynamics: wavefront + rotor tracking (~5-7 min per arrhythmia recording)', true);
     % Signal type per camera.  No default on purpose: the batch must not guess
     % (it used to assume CAM1 = voltage, CAM2 = calcium for every rig).
     sig = {'SELECT...', 'VOLTAGE', 'CALCIUM', 'NOT USED'};
@@ -134,7 +139,7 @@ function fig = cadence_pipeline_ui()
         'STEP 1) Select the parent folder of the raw recordings. Every sub-folder (any depth) that holds .tif volumes or SciMedia .gsh/.gsd pairs is one recording. Optionally pick sub-folders to restrict the run.'; ''; ...
         'STEP 2) Select the processed folder: converted .mat files go to converted/, conditioned files to conditioned/, with a conditioning log.'; ''; ...
         'STEP 3) Select the metrics output folder: -metrics.mat files, the per-recording medians CSV, the Excel summary and the batch log.'; ''; ...
-        'STEP 4) Check the conditioning settings (defaults = recommended: SVD denoising, HYBRID 100/50 filter, drift correction, normalization, ensemble averaging; HYBRID conditions at [0, 100] Hz and keeps a [0, 50] Hz ensemble average: rise times and DF/RI/OI come from 100 Hz, every other metric from 50 Hz, and needs ensemble averaging), then set the SIGNAL type of each camera (VOLTAGE, CALCIUM, or NOT USED for cameras the recordings do not have). The same assignment applies to every recording in the run, so process rigs with different camera layouts in separate runs. RHYTHM = AUTO classifies every recording from its data: paced with 1:1 capture (or regular and unpaced) -> voltage: activation, rise, repolarization, APD80/APD50, local CV, alternans, DF/RI/OI; calcium: Vm-Ca delay, rise, decay, CaTD80/CaTD50, tau, alternans. Paced but not 1:1 and either faster than the stimulus or disorganized, unpaced and irregular, or regular unpaced with an arrhythmia file tag -> arrhythmia, voltage only: DF/RI/OI, wavefront dynamics and rotor dynamics (Arrhythmia sheet). Paced but not 1:1 with an organized signal no faster than the stimulus (2:1 block, lost capture) -> uncaptured: paced metrics, labelled in the Rhythm column, not an arrhythmia. File-name tags are a hint; list exceptions in cadence_rhythm_overrides.csv (columns File, Rhythm) in the metrics folder. Features are extracted with the adaptive SNR mask on the ensemble beat. The run resumes where it stopped.'};
+        'STEP 4) Check the conditioning settings (defaults = recommended: SVD denoising, HYBRID 100/50 filter, drift correction, normalization, ensemble averaging; HYBRID conditions at [0, 100] Hz and keeps a [0, 50] Hz ensemble average: rise times and DF/RI/OI come from 100 Hz, every other metric from 50 Hz, and needs ensemble averaging), then set the SIGNAL type of each camera (VOLTAGE, CALCIUM, or NOT USED for cameras the recordings do not have). The same assignment applies to every recording in the run, so process rigs with different camera layouts in separate runs. RHYTHM = AUTO classifies every recording from its data: paced with 1:1 capture (or regular and unpaced) -> voltage: activation, rise, repolarization, APD80/APD50, local CV, alternans, DF/RI/OI; calcium: Vm-Ca delay, rise, decay, CaTD80/CaTD50, tau, alternans. Paced but not 1:1 and either faster than the stimulus or disorganized, unpaced and irregular, or regular unpaced with an arrhythmia file tag -> arrhythmia, voltage only: DF/RI/OI, wavefront dynamics and rotor dynamics (Arrhythmia sheet); untick ARRHYTHMIA DYNAMICS to skip the wavefront and rotor tracking (about 5-7 min per arrhythmia recording) and keep DF/RI/OI only. A later run with it ticked redoes those recordings even with Resume on. Paced but not 1:1 with an organized signal no faster than the stimulus (2:1 block, lost capture) -> uncaptured: paced metrics, labelled in the Rhythm column, not an arrhythmia. File-name tags are a hint; list exceptions in cadence_rhythm_overrides.csv (columns File, Rhythm) in the metrics folder. Features are extracted with the adaptive SNR mask on the ensemble beat. The run resumes where it stopped.'};
 
     fig.UserData = struct('h', h, 'stop', false, 'running', false, 'last_table', table());
     fig.Visible = 'on';
@@ -278,6 +283,7 @@ function run_pressed(fig)
     end
     rhythm = struct('AUTO', 'auto', 'ALL_PACED', 'paced', 'ALL_ARRHYTHMIA', 'arrhythmia');
     eo = struct('FOV_mm', h.FOV.Value, 'Rhythm', rhythm.(strrep(h.Rhythm.Value, ' ', '_')), ...
+                'ArrDynamics', logical(h.ArrDyn.Value), ...
                 'VoltageCams', find(strcmp(types, 'VOLTAGE')), ...
                 'CalciumCams', find(strcmp(types, 'CALCIUM')));
     roles_txt = strjoin(arrayfun(@(k) sprintf('CAM%d %s', k, lower(types{k})), 1:4, 'UniformOutput', false), ', ');
@@ -302,7 +308,8 @@ function run_pressed(fig)
     else, console(fig, ['Scope: ' strjoin(folders, ', ')]); end
     console(fig, sprintf('Conditioning: SVD %s | binning %s (%d) | filter %s | drift %s | normalize %s | ensemble %s | motion %s | FOV %g mm | maps PDF %s', ...
         h.SVD.Value, h.Binning.Value, co.BinSize, h.Filter.Value, h.Drift.Value, h.Normalize.Value, h.Ensemble.Value, h.Motion.Value, eo.FOV_mm, tern(h.MapsPDF.Value, 'yes', 'no')));
-    console(fig, ['Cameras: ' roles_txt ' | Rhythm: ' h.Rhythm.Value]);
+    console(fig, ['Cameras: ' roles_txt ' | Rhythm: ' h.Rhythm.Value ...
+                  ' | Arrhythmia dynamics: ' tern(h.ArrDyn.Value, 'on', 'off (DF/RI/OI only)')]);
     drawnow;
 
     T = table();

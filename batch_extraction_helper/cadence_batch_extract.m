@@ -56,6 +56,9 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
 %                    metrics file exists but has NO row (the CSV was lost or
 %                    truncated) is ADOPTED: its medians are recomputed from the
 %                    saved metrics file instead of extracting it again.
+%                    An arrhythmia recording extracted with the dynamics off
+%                    (Rhythm_basis says "arrhythmia dynamics skipped") is
+%                    redone when ExtractOpts.ArrDynamics is true (the default).
 %                    false: redo all.
 %
 %   DISK SPACE.  The free space is checked before each metrics file is saved;
@@ -222,13 +225,19 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     % (filter unknown): kept for a single-band run, redone for a hybrid one.
     expect = string(o.ExpectFilter);
     filter_ok = @(f) expect == "" || f == expect || (f == "" && ~startsWith(expect, "hybrid"));
-    todo = false(numel(jobs), 1);  refilter = 0;
+    % Likewise an arrhythmia recording extracted with the dynamics off
+    % (ExtractOpts.ArrDynamics = false) is redone by a run that has them on.
+    want_dyn = ~isfield(o.ExtractOpts, 'ArrDynamics') || o.ExtractOpts.ArrDynamics;
+    dyn_ok = @(b) ~want_dyn || ismissing(string(b)) || ~contains(string(b), dyn_tag());
+    todo = false(numel(jobs), 1);  refilter = 0;  redyn = 0;
     adopt = false(numel(jobs), 1);        % metrics file on disk but no row: summarize it, do not re-extract
     for j = 1:numel(jobs)
         r = find_row(jobs(j));
         already = ~isempty(r) && isfile(jobs(j).metrics_file);
         if already && ~filter_ok(rows{r}.Filter)
             already = false;  refilter = refilter + 1;
+        elseif already && ~dyn_ok(rows{r}.Rhythm_basis)
+            already = false;  redyn = redyn + 1;
         end
         todo(j) = ~(o.Resume && already);
         adopt(j) = o.Resume && isempty(r) && isfile(jobs(j).metrics_file);
@@ -240,6 +249,9 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
     end
     if o.Resume && refilter > 0
         note(sprintf('%d of them were extracted with a different filter than %s and are redone', refilter, expect));
+    end
+    if o.Resume && redyn > 0
+        note(sprintf('%d of them were extracted without the arrhythmia dynamics and are redone with them', redyn));
     end
 
     if o.DryRun
@@ -303,7 +315,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
         row.Name_tag = double(~isempty(o.ArrhythmiaPattern) && ~isempty(regexp(job.file, o.ArrhythmiaPattern, 'once')));
         disk_full = false;
         if adopt(j)
-            [done, row, Tc] = adopt_metrics(job, row, filter_ok, logf);
+            [done, row, Tc] = adopt_metrics(job, row, filter_ok, dyn_ok, logf);
             if done
                 row.Elapsed_s = round(toc(t_all));
                 [rows, done_sources, done_metrics, Tcam] = keep_row(rows, done_sources, done_metrics, Tcam, row, Tc, job, find_row);
@@ -341,8 +353,7 @@ function T = cadence_batch_extract(input_root, output_root, varargin)
             row.Features = string(strjoin(st.features, ' '));
             if isfield(d, 'rhythm')
                 row.Rhythm = string(d.rhythm.class);  row.Capture = string(d.rhythm.capture);
-                row.Rhythm_basis = string(d.rhythm.basis);
-                if ~isempty(d.rhythm.note), row.Rhythm_basis = row.Rhythm_basis + " | NOTE: " + string(d.rhythm.note); end
+                row.Rhythm_basis = rhythm_basis(d.rhythm);
             end
             row.Name_tag = double(eo.NameTag);
             row.Filter   = filter_label(d);
@@ -602,6 +613,18 @@ function s = filter_label(d)
     end
 end
 
+function b = rhythm_basis(rh)
+% Rhythm_basis column: the classification basis, any NOTE, and a tag when the
+% arrhythmia dynamics were skipped (Resume reads the tag back through dyn_ok).
+    b = string(rh.basis);
+    if ~isempty(rh.note), b = b + " | NOTE: " + string(rh.note); end
+    if isfield(rh, 'dynamics') && strcmp(rh.dynamics, 'skipped'), b = b + " | " + dyn_tag(); end
+end
+
+function t = dyn_tag()
+    t = "arrhythmia dynamics skipped";
+end
+
 function m = camera_meta(row)
 % Identity columns carried into the per-camera table (Source / Metrics_file
 % are the keys a re-run uses to replace its own rows).
@@ -721,12 +744,13 @@ function [rows, done_sources, done_metrics, Tcam] = keep_row(rows, done_sources,
     Tcam = [Tcam(~old, :); Tc];
 end
 
-function [done, row, Tc] = adopt_metrics(job, row, filter_ok, logf)
+function [done, row, Tc] = adopt_metrics(job, row, filter_ok, dyn_ok, logf)
 % A metrics file exists but the medians CSV has no row for it (the CSV was
 % lost, or truncated by a full disk).  Read the saved file and fill the row
 % from it: seconds instead of a re-extraction.  done = false (extract it
-% after all) when the file cannot be read, holds no metrics, or was made with
-% another temporal filter than this run asks for.
+% after all) when the file cannot be read, holds no metrics, was made with
+% another temporal filter than this run asks for, or skipped the arrhythmia
+% dynamics this run asks for.
     done = false;  Tc = table();
     t0 = tic;
     try
@@ -743,8 +767,10 @@ function [done, row, Tc] = adopt_metrics(job, row, filter_ok, logf)
         row.Features = string(strjoin(fieldnames(d.ep_metrics)', ' '));
         if isfield(d, 'rhythm') && isstruct(d.rhythm)
             row.Rhythm = string(d.rhythm.class);  row.Capture = string(d.rhythm.capture);
-            row.Rhythm_basis = string(d.rhythm.basis);
-            if ~isempty(d.rhythm.note), row.Rhythm_basis = row.Rhythm_basis + " | NOTE: " + string(d.rhythm.note); end
+            row.Rhythm_basis = rhythm_basis(d.rhythm);
+        end
+        if ~dyn_ok(row.Rhythm_basis)
+            logf('   existing metrics file skipped the arrhythmia dynamics: extracting again');  return;
         end
         vals = cadence_recording_medians(d);
         fn = fieldnames(vals);

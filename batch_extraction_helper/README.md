@@ -79,7 +79,8 @@ other CADENCE modules: SELECT buttons for the raw, processed and metrics
 folders, a list of the raw folder's sub-folders to restrict the run (none
 selected = whole tree), the Signal Conditioning dropdowns with their defaults,
 the field of view, the run options (dry run, resume, re-condition,
-re-convert, keep converted files, RHYTHM: AUTO / ALL PACED / ALL ARRHYTHMIA), a
+re-convert, keep converted files, RHYTHM: AUTO / ALL PACED / ALL ARRHYTHMIA,
+arrhythmia dynamics on/off), a
 RUN button, a STOP button that ends the run after the current recording, and
 a console that echoes every batch log line. If the processed or metrics
 folder is left empty, `<raw folder>_processed` and `<raw folder>_metrics`
@@ -228,6 +229,12 @@ wavefront dynamics and phase-singularity/rotor dynamics, computed as the
 Feature Extraction app does and stored in the same `ep_metrics` fields, so
 Signal Analysis plays them. With the hybrid filter, DF/RI/OI use the 100 Hz
 data and phase, wavefronts and rotors the 50 Hz band (the band of Fig 5).
+The wavefront and rotor tracking takes about 5-7 min per 4000-frame
+recording. To leave it out, untick **Arrhythmia dynamics** in the UI
+(`ExtractOpts.ArrDynamics = false`). Arrhythmia recordings are then still
+classified and get DF/RI/OI. Their wavefront and rotor columns stay empty, and
+`Rhythm_basis` says `arrhythmia dynamics skipped`. A later run with the
+dynamics on redoes those recordings, even with Resume.
 
 The medians CSV records `Rhythm`, `Capture`, `Rhythm_basis` (the numbers
 behind the decision, plus a NOTE when the file name disagrees) and
