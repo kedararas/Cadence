@@ -160,7 +160,12 @@ Requires **MATLAB** plus these toolboxes:
 
 ## Citing CADENCE
 
-If you use CADENCE in your research, please cite the archived release:
+If you use CADENCE in your research, please cite the paper and the archived release.
+
+**Paper** (preprint):
+Aras K, Pandey S, Adelakun A, Minnella E, Lichtenberger A, Qadus N, Barnhart L. CADENCE: Open-source software for signal conditioning, feature extraction, visualization and analysis of cardiac optical mapping data. *bioRxiv* (2026). [doi:10.64898/2026.09.30.755844](https://doi.org/10.64898/2026.09.30.755844)
+
+**Software** (archived release):
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22802984.svg)](https://doi.org/10.5281/zenodo.22802984)
 
